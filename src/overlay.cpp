@@ -53,6 +53,14 @@ class WebApp : public CefApp,
   void OnScheduleMessagePumpWork(int64_t delay_ms) override {
     if (delay_ms <= 0) g_pumpScheduled.store(true, std::memory_order_relaxed);
   }
+  bool OnAlreadyRunningAppRelaunch(CefRefPtr<CefCommandLine>,
+                                   const CefString&) override {
+    // Another instance launched with the same cache dir. Without this,
+    // Chromium "handles" the relaunch by opening a plain Chrome window.
+    std::fprintf(stderr,
+                 "[cef] second instance relaunch ignored (cache dir in use)\n");
+    return true;
+  }
 
   // RenderProcessHandler (runs in the renderer subprocess)
   void OnWebKitInitialized() override {
@@ -188,6 +196,17 @@ class OverlayClient : public CefClient,
   }
 
   // CefLifeSpanHandler -------------------------------------------------------
+  bool OnBeforePopup(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, int,
+                     const CefString& target_url, const CefString&,
+                     CefLifeSpanHandler::WindowOpenDisposition, bool,
+                     const CefPopupFeatures&, CefWindowInfo&,
+                     CefRefPtr<CefClient>&, CefBrowserSettings&,
+                     CefRefPtr<CefDictionaryValue>&, bool*) override {
+    // never allow native popup windows over the overlay
+    std::fprintf(stderr, "[cef] popup suppressed: %s\n",
+                 target_url.ToString().c_str());
+    return true;
+  }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_ = browser;
   }

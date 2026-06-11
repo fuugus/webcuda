@@ -74,6 +74,7 @@ struct AppState {
   // boxes" from compositing/presentation artifacts
   int probeBarMin = 1 << 20, probeBarMax = -1;
   int probeBoxMin = 1 << 20, probeBoxMax = -1;
+  bool tCollapsed = false, tExpanded = false;
 
   // stats
   double fps = 0, frameMs = 0;
@@ -602,7 +603,12 @@ int main(int argc, char** argv) {
   std::string dir = exeDir();
   cfg.url = "file://" + dir + "/ui/index.html" +
             (g.frameless ? "?frameless=1" : "");
-  cfg.cachePath = dir + "/cef_cache";
+  // selftest runs get an isolated cache: a killed run leaves Chromium's
+  // singleton lock behind, and the next launch would forward itself to the
+  // "existing instance" instead of starting
+  cfg.cachePath = g.selftest
+                      ? "/tmp/webcuda-selftest-" + std::to_string(getpid())
+                      : dir + "/cef_cache";
   cfg.resourceDir = dir;
   cfg.localesDir = dir + "/locales";
   if (!g.overlay.init(cfg, onQuery, onCursorChange)) return 1;
@@ -811,10 +817,29 @@ int main(int argc, char** argv) {
                 g.probeBoxMin, g.probeBoxMax, g.probeBoxMax - g.probeBoxMin,
                 (unsigned long long)g.overlay.skippedUploads());
           }
+          // exercise collapse/expand on the perf window through the REAL
+          // pointer path, aimed at the chevron ICON center (clicks landing on
+          // the svg used to start a titlebar drag and get swallowed).
+          // Perf titlebar: right edge at fbW-40; buttons: [collapse][close],
+          // 22px wide, 8px gap, 6px padding -> collapse center ~ fbW-87.
+          if (g.selftestFrame == 140 || g.selftestFrame == 165) {
+            int cx = g.fbW - 87, cy = 86;
+            g.overlay.mouseMove(cx, cy, 0);
+            g.overlay.mouseButton(cx, cy, 0, true, 1, kModLeftMouse);
+            g.overlay.mouseButton(cx, cy, 0, false, 1, 0);
+          }
+          if (g.selftestFrame == 160)  // body gone after collapse?
+            g.tCollapsed = !g.overlay.uiAt(g.fbW - 200, 160);
+          if (g.selftestFrame == 185)  // body back after expand?
+            g.tExpanded = g.overlay.uiAt(g.fbW - 200, 160);
           // after settling: did the anchored windows track their borders?
           // Performance is right-anchored (gap 40), About bottom-anchored
           // (gap 70) — the window resized +240 x / net -160 y meanwhile.
-          if (g.selftestFrame >= 150) {
+          if (g.selftestFrame >= 185) {
+            std::printf(
+                "[selftest] collapse via pointer click: collapse %s, expand "
+                "%s\n",
+                g.tCollapsed ? "PASS" : "FAIL", g.tExpanded ? "PASS" : "FAIL");
             int perfRight =
                 g.overlay.probeAlphaEdgeRow(86, g.fbW - 2, g.fbW - 250, true);
             int aboutBottom =

@@ -4,8 +4,30 @@
 <meta charset="utf-8">
 <title>WebCUDA overlay</title>
 <style>
+  /* design tokens — the reusable base style (dark, flat, translucent) */
+  :root {
+    --ui-accent: #5b9dff;
+    --ui-bg-bar: rgba(14,16,24,.88);     /* header bar */
+    --ui-bg-panel: rgba(17,20,29,.90);   /* floating windows */
+    --ui-bg-flat: rgba(255,255,255,.035);/* flat raised surfaces (titlebars) */
+    --ui-border: rgba(255,255,255,.10);
+    --ui-text: #dde3ee;
+    --ui-text-dim: #9aa6ba;
+    --ui-text-faint: #7c8699;
+    --ui-radius: 10px;
+  }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100%; height:100%; background:transparent; overflow:hidden; }
+
+  /* flat translucent scrollbars (VS Code style) */
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background:transparent; }
+  ::-webkit-scrollbar-thumb {
+    background:rgba(255,255,255,.12) padding-box;
+    border:2px solid transparent; border-radius:5px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.25) padding-box; border:2px solid transparent; }
+  ::-webkit-scrollbar-thumb:active { background:rgba(91,157,255,.45) padding-box; border:2px solid transparent; }
   body {
     font: 13px/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
     color:#dde3ee;
@@ -17,12 +39,12 @@
   #topbar {
     position:fixed; left:0; top:0; right:0; height:38px;
     display:flex; align-items:center; gap:6px; padding:0 12px;
-    background:rgba(14,16,24,.88);
+    background:var(--ui-bg-bar);
     border-bottom:1px solid rgba(255,255,255,.08);
     z-index:5;
   }
   #topbar .brand { font-weight:650; letter-spacing:.4px; margin-right:10px; }
-  #topbar .brand b { color:#5b9dff; }
+  #topbar .brand b { color:var(--ui-accent); }
   #topbar button {
     background:rgba(255,255,255,.06); color:#cdd6e4;
     border:1px solid rgba(255,255,255,.10); border-radius:6px;
@@ -48,9 +70,9 @@
   .win {
     position:fixed; left:0; top:0;
     min-width:240px; min-height:0;
-    background:rgba(17,20,29,.90);
-    border:1px solid rgba(255,255,255,.10);
-    border-radius:10px;
+    background:var(--ui-bg-panel);
+    border:1px solid var(--ui-border);
+    border-radius:var(--ui-radius);
     box-shadow:0 12px 40px rgba(0,0,0,.45);
     will-change:transform;
     display:flex; flex-direction:column;
@@ -60,23 +82,32 @@
   .titlebar {
     height:32px; flex:0 0 32px; display:flex; align-items:center;
     padding:0 6px 0 12px; gap:8px;
-    background:linear-gradient(rgba(255,255,255,.05), rgba(255,255,255,.015));
-    border-bottom:1px solid rgba(255,255,255,.07);
-    border-radius:10px 10px 0 0;
+    background:var(--ui-bg-flat);
+    border-bottom:1px solid rgba(255,255,255,.06);
+    border-radius:var(--ui-radius) var(--ui-radius) 0 0;
     cursor:grab;
   }
   .titlebar:active { cursor:grabbing; }
-  .titlebar .t { flex:1; font-weight:600; font-size:12.5px; color:#c9d3e3; pointer-events:none; }
+  .titlebar .t {
+    flex:1; font-size:11px; font-weight:600; letter-spacing:.8px;
+    text-transform:uppercase; color:var(--ui-text-dim); pointer-events:none;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
   .titlebar button {
-    width:22px; height:22px; border-radius:5px; border:none;
-    background:transparent; color:#8a94a8; font-size:12px; cursor:pointer;
+    width:22px; height:22px; border-radius:4px; border:none; padding:0;
+    background:transparent; color:#8a94a8; cursor:pointer; flex:0 0 auto;
     display:flex; align-items:center; justify-content:center;
   }
-  .titlebar button:hover { background:rgba(255,255,255,.10); color:#fff; }
-  .titlebar button.close:hover { background:#c0392b; }
+  .titlebar button svg { width:10px; height:10px; }
+  .titlebar button:hover { background:rgba(255,255,255,.08); color:#e8edf5; }
+  .titlebar button.close:hover { background:#e81123; color:#fff; }
+  /* chevron: up = expanded (fold up), down = collapsed (unfold down) */
+  .titlebar .collapse svg { transition:transform .12s ease; }
+  .win.collapsed .collapse svg { transform:rotate(180deg); }
   .body { padding:12px; overflow:auto; flex:1; }
   .win.collapsed .body, .win.collapsed .rh { display:none; }
   .win.collapsed { min-height:0; }
+  .win.collapsed .titlebar { border-radius:var(--ui-radius); border-bottom:none; }
 
   /* resize handles */
   .rh { position:absolute; z-index:11; }
@@ -216,8 +247,12 @@ function makeWindow(id, title, x, y, w, h, anchors = '') {
   el.innerHTML = `
     <div class="titlebar">
       <span class="t">${title}</span>
-      <button class="collapse" title="collapse">–</button>
-      <button class="close" title="close">✕</button>
+      <button class="collapse" title="collapse">
+        <svg viewBox="0 0 10 10"><path d="M2 6.6l3-3.2 3 3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="close" title="close">
+        <svg viewBox="0 0 10 10"><path d="M1.8 1.8l6.4 6.4M8.2 1.8l-6.4 6.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </button>
     </div>
     <div class="body"></div>
     ${['n','s','e','w','ne','nw','se','sw'].map(d=>`<div class="rh ${d}" data-d="${d}"></div>`).join('')}`;
@@ -240,7 +275,9 @@ function makeWindow(id, title, x, y, w, h, anchors = '') {
   /* drag (titlebar) */
   const tb = el.querySelector('.titlebar');
   tb.addEventListener('pointerdown', ev => {
-    if (ev.target.tagName === 'BUTTON' || ev.button !== 0) return;
+    // closest(): clicks on the SVG icons inside the buttons must not start a
+    // drag — pointer capture would swallow the button's click event
+    if (ev.button !== 0 || ev.target.closest('button')) return;
     const sx = ev.clientX - st.x, sy = ev.clientY - st.y;
     tb.setPointerCapture(ev.pointerId);
     const move = e => { st.x = e.clientX - sx; st.y = e.clientY - sy; clamp(st); apply(st); };
@@ -281,9 +318,23 @@ function makeWindow(id, title, x, y, w, h, anchors = '') {
     });
   });
 
-  el.querySelector('.collapse').addEventListener('click', () => {
-    el.classList.toggle('collapsed');
+  // collapse folds the window to its titlebar (height included), VS Code
+  // section style; the chevron rotates to indicate state
+  const collapseBtn = el.querySelector('.collapse');
+  const toggleCollapse = () => {
+    const c = el.classList.toggle('collapsed');
+    if (c) {
+      st.savedH = el.offsetHeight;
+      el.style.height = '32px';
+    } else {
+      el.style.height = (st.savedH || st.h) + 'px';
+    }
+    collapseBtn.title = c ? 'expand' : 'collapse';
     updateAnchorDists(st);
+  };
+  collapseBtn.addEventListener('click', toggleCollapse);
+  tb.addEventListener('dblclick', e => {
+    if (!e.target.closest('button')) toggleCollapse();
   });
   el.querySelector('.close').addEventListener('click',
       () => el.style.display = 'none');
