@@ -208,7 +208,9 @@ if (frameless) {
 let zTop = 20;
 const wins = {};
 
-function makeWindow(id, title, x, y, w, h) {
+// anchors: 'r' keeps the distance to the right viewport edge, 'b' to the
+// bottom — anchored windows follow their border during window resize
+function makeWindow(id, title, x, y, w, h, anchors = '') {
   const el = document.createElement('div');
   el.className = 'win';
   el.innerHTML = `
@@ -221,11 +223,12 @@ function makeWindow(id, title, x, y, w, h) {
     ${['n','s','e','w','ne','nw','se','sw'].map(d=>`<div class="rh ${d}" data-d="${d}"></div>`).join('')}`;
   document.body.appendChild(el);
 
-  const st = { el, x, y, w, h, id };
+  const st = { el, x, y, w, h, id, anchors, distR: 0, distB: 0 };
   wins[id] = st;
   el.style.width = w + 'px';
   el.style.height = h + 'px';
   apply(st);
+  updateAnchorDists(st);
 
   const focus = () => {
     el.style.zIndex = ++zTop;
@@ -243,7 +246,8 @@ function makeWindow(id, title, x, y, w, h) {
     const move = e => { st.x = e.clientX - sx; st.y = e.clientY - sy; clamp(st); apply(st); };
     const up = e => { tb.releasePointerCapture(ev.pointerId);
                       tb.removeEventListener('pointermove', move);
-                      tb.removeEventListener('pointerup', up); };
+                      tb.removeEventListener('pointerup', up);
+                      updateAnchorDists(st); };
     tb.addEventListener('pointermove', move);
     tb.addEventListener('pointerup', up);
   });
@@ -270,14 +274,17 @@ function makeWindow(id, title, x, y, w, h) {
       };
       const up = () => { hd.releasePointerCapture(ev.pointerId);
                          hd.removeEventListener('pointermove', move);
-                         hd.removeEventListener('pointerup', up); };
+                         hd.removeEventListener('pointerup', up);
+                         updateAnchorDists(st); };
       hd.addEventListener('pointermove', move);
       hd.addEventListener('pointerup', up);
     });
   });
 
-  el.querySelector('.collapse').addEventListener('click',
-      () => el.classList.toggle('collapsed'));
+  el.querySelector('.collapse').addEventListener('click', () => {
+    el.classList.toggle('collapsed');
+    updateAnchorDists(st);
+  });
   el.querySelector('.close').addEventListener('click',
       () => el.style.display = 'none');
   focus();
@@ -285,14 +292,25 @@ function makeWindow(id, title, x, y, w, h) {
 }
 
 function apply(st) { st.el.style.transform = `translate3d(${st.x}px,${st.y}px,0)`; }
+function updateAnchorDists(st) {
+  st.distR = innerWidth - (st.x + st.el.offsetWidth);
+  st.distB = innerHeight - (st.y + st.el.offsetHeight);
+}
 function clamp(st) {
   st.x = Math.min(Math.max(st.x, 60 - st.el.offsetWidth), innerWidth - 60);
   st.y = Math.min(Math.max(st.y, 38), innerHeight - 24);
 }
 
-// keep windows reachable when the OS window shrinks
+// anchored windows follow their border; everything stays reachable
 window.addEventListener('resize', () => {
-  for (const st of Object.values(wins)) { clamp(st); apply(st); }
+  for (const st of Object.values(wins)) {
+    if (st.anchors.includes('r'))
+      st.x = innerWidth - st.distR - st.el.offsetWidth;
+    if (st.anchors.includes('b'))
+      st.y = innerHeight - st.distB - st.el.offsetHeight;
+    clamp(st);
+    apply(st);
+  }
 });
 
 document.querySelectorAll('#topbar [data-toggle]').forEach(b => {
@@ -374,7 +392,7 @@ document.getElementById('bPause').addEventListener('click', e => {
 document.getElementById('bReset').addEventListener('click', () => send('cmd reset'));
 
 /* ---------------- performance window ---------------- */
-const perfBody = makeWindow('perf', 'Performance', innerWidth - 360, 70, 320, 300);
+const perfBody = makeWindow('perf', 'Performance', innerWidth - 360, 70, 320, 300, 'r');
 perfBody.innerHTML = `
   <dl class="stats">
     <dt>Render</dt><dd id="sFps">—</dd>
@@ -412,7 +430,7 @@ window.__stats = o => {
 };
 
 /* ---------------- about window ---------------- */
-const aboutBody = makeWindow('about', 'About', innerWidth / 2 - 210, innerHeight - 280, 420, 210);
+const aboutBody = makeWindow('about', 'About', innerWidth / 2 - 210, innerHeight - 280, 420, 210, 'b');
 aboutBody.innerHTML = `
   <p class="about"><b>WebCUDA</b> — a unified graphics pipeline: a CUDA
   reaction-diffusion simulation writes directly into an OpenGL texture
@@ -424,7 +442,6 @@ aboutBody.innerHTML = `
   these windows stays at full refresh rate. Input is routed by the overlay's
   alpha channel: clicks on transparent areas reach the simulation.</p>
   <p class="about" id="aboutGpu"></p>`;
-wins.about.el.style.display = 'none';
 send('info', r => {
   const [gpu, sim] = r.split('|');
   document.getElementById('aboutGpu').innerHTML = `GPU: <code>${gpu}</code> · sim grid <code>${sim}</code>`;

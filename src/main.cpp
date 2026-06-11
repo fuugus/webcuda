@@ -803,13 +803,31 @@ int main(int argc, char** argv) {
               g.probeBoxMax = std::max(g.probeBoxMax, box);
             }
           }
-          if (g.selftestFrame >= 130) {
+          if (g.selftestFrame == 130) {
             std::printf(
                 "[selftest] resize probe: topbar bottom %d..%d (drift %d), "
                 "box top %d..%d (drift %d), stretched frames filtered: %llu\n",
                 g.probeBarMin, g.probeBarMax, g.probeBarMax - g.probeBarMin,
                 g.probeBoxMin, g.probeBoxMax, g.probeBoxMax - g.probeBoxMin,
                 (unsigned long long)g.overlay.skippedUploads());
+          }
+          // after settling: did the anchored windows track their borders?
+          // Performance is right-anchored (gap 40), About bottom-anchored
+          // (gap 70) — the window resized +240 x / net -160 y meanwhile.
+          if (g.selftestFrame >= 150) {
+            int perfRight =
+                g.overlay.probeAlphaEdgeRow(86, g.fbW - 2, g.fbW - 250, true);
+            int aboutBottom =
+                g.overlay.probeAlphaEdge(g.fbW / 2, g.fbH - 2, g.fbH - 250, true);
+            int gapR = perfRight < 0 ? -1 : g.fbW - 1 - perfRight;
+            int gapB = aboutBottom < 0 ? -1 : g.fbH - 1 - aboutBottom;
+            std::printf(
+                "[selftest] anchors after resize: perf right gap %d (want 40), "
+                "about bottom gap %d (want 70) -> %s\n",
+                gapR, gapB,
+                (std::abs(gapR - 40) <= 2 && std::abs(gapB - 70) <= 2)
+                    ? "PASS"
+                    : "FAIL");
             g.selftestPhase = 4;
             g.pendingShot = true;
           }

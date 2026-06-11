@@ -470,10 +470,24 @@ int Overlay::probeAlphaEdge(int x, int y0, int y1, bool opaque) const {
   if (!g_client || g_client->mirror_.empty()) return -1;
   const int mw = g_client->mirrorW_, mh = g_client->mirrorH_;
   if (x < 0 || x >= mw) return -1;
-  y1 = std::min(y1, mh);
-  for (int y = std::max(0, y0); y < y1; y++) {
+  int step = y0 <= y1 ? 1 : -1;
+  for (int y = std::clamp(y0, 0, mh - 1); y != std::clamp(y1, 0, mh - 1);
+       y += step) {
     bool hit = g_client->mirror_[((size_t)y * mw + x) * 4 + 3] > 200;
     if (hit == opaque) return y;
+  }
+  return -1;
+}
+
+int Overlay::probeAlphaEdgeRow(int y, int x0, int x1, bool opaque) const {
+  if (!g_client || g_client->mirror_.empty()) return -1;
+  const int mw = g_client->mirrorW_, mh = g_client->mirrorH_;
+  if (y < 0 || y >= mh) return -1;
+  int step = x0 <= x1 ? 1 : -1;
+  for (int x = std::clamp(x0, 0, mw - 1); x != std::clamp(x1, 0, mw - 1);
+       x += step) {
+    bool hit = g_client->mirror_[((size_t)y * mw + x) * 4 + 3] > 200;
+    if (hit == opaque) return x;
   }
   return -1;
 }

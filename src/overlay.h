@@ -55,11 +55,11 @@ class Overlay {
   // True if the overlay has visible content (alpha > threshold) at the pixel.
   bool uiAt(int x, int y) const;
 
-  // Diagnostic: scans the CPU mirror column x from y0 to y1; returns the
-  // first row whose alpha crosses 200 (rising if `opaque`, falling if not),
-  // or -1. Used by the resize self-test to detect UI movement in Chromium's
-  // own output.
-  int probeAlphaEdge(int x, int y0, int y1, bool opaque) const;
+  // Diagnostics for the resize self-test: scan the CPU mirror for the first
+  // pixel whose alpha crosses 200 (rising if `opaque`, falling if not);
+  // returns -1 if none. Ranges may be reversed (scans backward).
+  int probeAlphaEdge(int x, int y0, int y1, bool opaque) const;     // column
+  int probeAlphaEdgeRow(int y, int x0, int x1, bool opaque) const;  // row
 
   bool loaded() const;
   void runJS(const std::string& code);
