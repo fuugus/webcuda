@@ -841,9 +841,9 @@ int main(int argc, char** argv) {
             SDL_SetWindowSize(g.window, w + 6, h + 4);
           if (g.selftestFrame > 40) {
             // probe Chromium's output (CPU mirror): topbar bottom edge just
-            // right of the 250px sidebar, dragged sim-window top edge at its
-            // titlebar column
-            int bar = g.overlay.probeAlphaEdge(270, 20, 120, false);
+            // right of activity bar (46) + sidebar (250), dragged sim-window
+            // top edge at its titlebar column
+            int bar = g.overlay.probeAlphaEdge(320, 20, 120, false);
             int box = g.overlay.probeAlphaEdge(
                 (int)(g.dragPointX + g.dragFrames * 2.0), 45, g.fbH - 10, true);
             if (bar >= 0) {

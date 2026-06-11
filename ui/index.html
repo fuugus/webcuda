@@ -76,9 +76,24 @@
   .menu .mi svg { width:10px; height:10px; }
   .menu .sep { height:1px; margin:4px 10px; background:rgba(255,255,255,.08); }
 
-  /* ---------- shell: sidebar, bottom panel, status bar ---------- */
+  /* ---------- shell: activity bar, sidebar, bottom panel, status bar ---------- */
+  #activitybar {
+    position:fixed; left:0; top:38px; bottom:38px; width:46px;
+    display:flex; flex-direction:column; align-items:center; padding-top:4px;
+    background:rgba(11,13,19,.92);
+    border-right:1px solid rgba(255,255,255,.07);
+    z-index:5;
+  }
+  .ab-item {
+    width:46px; height:44px; display:flex; align-items:center; justify-content:center;
+    color:#6b7585; border-left:2px solid transparent;
+  }
+  .ab-item svg { width:21px; height:21px; }
+  .ab-item:hover { color:#dde3ee; }
+  .ab-item.active { color:#e8edf5; border-left-color:var(--ui-accent); }
+
   #sidebar {
-    position:fixed; left:0; top:38px; bottom:38px; width:250px;
+    position:fixed; left:46px; top:38px; bottom:38px; width:250px;
     display:flex; flex-direction:column;
     background:var(--ui-bg-bar);
     border-right:1px solid rgba(255,255,255,.08);
@@ -106,6 +121,9 @@
   .side-item .chk { width:14px; flex:0 0 14px; display:flex; color:var(--ui-accent); }
   .side-item .chk svg { width:10px; height:10px; }
   .side-item.on { color:#dde3ee; }
+  .side-info { padding:10px 16px; font-size:12px; color:#aab4c6; }
+  .side-info p + p { margin-top:8px; }
+  #sv-stats .stats { padding:10px 16px; }
   #sidebar-resizer { position:fixed; top:38px; bottom:38px; width:7px; cursor:ew-resize; z-index:6; }
 
   #panel {
@@ -280,9 +298,21 @@
   <span class="clock" id="clock"></span>
 </div>
 
+<div id="activitybar">
+  <div class="ab-item active" data-view="workspace" title="Workspace">
+    <svg viewBox="0 0 20 20"><g stroke="currentColor" stroke-width="1.4" fill="none"><rect x="2" y="2" width="7" height="7" rx="1"/><rect x="11" y="2" width="7" height="7" rx="1"/><rect x="2" y="11" width="7" height="7" rx="1"/><rect x="11" y="11" width="7" height="7" rx="1"/></g></svg>
+  </div>
+  <div class="ab-item" data-view="stats" title="Statistics">
+    <svg viewBox="0 0 20 20"><path d="M2 12h3.5l2.5-7 4 12 2.5-7H18" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="ab-item" data-view="info" title="Info">
+    <svg viewBox="0 0 20 20"><g stroke="currentColor" stroke-width="1.4" fill="none"><circle cx="10" cy="10" r="7.5"/><path d="M10 9.5V14" stroke-linecap="round"/><circle cx="10" cy="6.4" r="0.4" fill="currentColor"/></g></svg>
+  </div>
+</div>
+
 <div id="sidebar">
-  <div class="side-title">Workspace</div>
-  <div class="side-scroll">
+  <div class="side-title" id="sideTitle">Workspace</div>
+  <div class="side-scroll" id="sv-workspace">
     <div class="side-section">
       <div class="side-head"><svg viewBox="0 0 10 10"><path d="M2 3.2l3 3.2 3-3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Panels</div>
       <div class="side-body" id="secPanels"></div>
@@ -294,6 +324,18 @@
     <div class="side-section">
       <div class="side-head"><svg viewBox="0 0 10 10"><path d="M2 3.2l3 3.2 3-3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Palettes</div>
       <div class="side-body" id="secPalettes"></div>
+    </div>
+  </div>
+  <div class="side-scroll" id="sv-stats" style="display:none">
+    <dl class="stats" id="sstats"></dl>
+  </div>
+  <div class="side-scroll" id="sv-info" style="display:none">
+    <div class="side-info">
+      <p><b>WebCUDA</b> — CUDA compute rendering zero-copy into OpenGL,
+      with this Chromium overlay composited in the same swapchain.</p>
+      <p>The simulation is a Gray-Scott reaction-diffusion system. Draw into
+      it by dragging on the background; tune it in the Simulation panel.</p>
+      <p>See the bottom panel's Shortcuts tab for all keybindings.</p>
     </div>
   </div>
 </div>
@@ -551,7 +593,7 @@ window.addEventListener('resize', () => {
 
 /* ---------------- panel helpers (used by menus) ---------------- */
 const DEFAULT_LAYOUT = () => ({
-  sim:   { x: 290, y: 70, w: 330, h: 330 },  // clear of the sidebar
+  sim:   { x: 340, y: 70, w: 330, h: 330 },  // clear of activity bar + sidebar
   perf:  { x: innerWidth - 360, y: 70, w: 320, h: 300 },
   about: { x: innerWidth / 2 - 210, y: innerHeight - 280, w: 420, h: 210 },
 });
@@ -707,20 +749,26 @@ window.__stats = o => {
   set('sbFps', o.fps.toFixed(0) + ' fps');
   set('sbCuda', 'cuda ' + o.cudaMs.toFixed(2) + ' ms');
   set('sbSim', o.sim);
-  const bs = document.getElementById('bstats');
-  if (bs && !bs.closest('.pview').classList.contains('hidden')) {
-    bs.innerHTML = '';
-    for (const [k, v] of [['Render', o.fps.toFixed(1) + ' fps'],
-                          ['Frame time', o.frameMs.toFixed(2) + ' ms'],
-                          ['CUDA kernels', o.cudaMs.toFixed(2) + ' ms'],
-                          ['Overlay paints', o.paints.toFixed(0) + ' /s'],
-                          ['Overlay upload', o.upMs.toFixed(2) + ' ms'],
-                          ['Sim grid', o.sim], ['GPU', o.gpu]]) {
+  const rows = [['Render', o.fps.toFixed(1) + ' fps'],
+                ['Frame time', o.frameMs.toFixed(2) + ' ms'],
+                ['CUDA kernels', o.cudaMs.toFixed(2) + ' ms'],
+                ['Overlay paints', o.paints.toFixed(0) + ' /s'],
+                ['Overlay upload', o.upMs.toFixed(2) + ' ms'],
+                ['Sim grid', o.sim], ['GPU', o.gpu]];
+  const fillDl = el => {
+    el.innerHTML = '';
+    for (const [k, v] of rows) {
       const dt = document.createElement('dt'), dd = document.createElement('dd');
       dt.textContent = k; dd.textContent = v;
-      bs.append(dt, dd);
+      el.append(dt, dd);
     }
-  }
+  };
+  const bs = document.getElementById('bstats');
+  if (bs && !bs.closest('.pview').classList.contains('hidden')) fillDl(bs);
+  const ss = document.getElementById('sstats');
+  if (ss && ss.closest('.side-scroll').style.display !== 'none' &&
+      window.shellState && shellState.sideVis)
+    fillDl(ss);
   hist.push(o.fps);
   if (hist.length > 240) hist.shift();
   const cv = document.getElementById('spark'), ctx = cv.getContext('2d');
@@ -1012,22 +1060,33 @@ document.addEventListener('contextmenu', e => {
 });
 
 /* ---------------- shell: sidebar, bottom panel, status bar ---------------- */
-const shell = { sideW: 250, sideVis: true, panelH: 220, panelVis: true,
-                panelCol: false, statusVis: true };
+const shell = { sideW: 250, sideVis: true, sideView: 'workspace',
+                panelH: 220, panelVis: true, panelCol: false, statusVis: true };
+const AB_W = 46;  // activity bar width
 window.shellState = shell;  // safe reference for code that runs before this block
 const $id = id => document.getElementById(id);
 
 function applyShell() {
   const statusH = shell.statusVis ? 38 : 0;
   $id('statusbar').style.display = shell.statusVis ? 'flex' : 'none';
+  $id('activitybar').style.bottom = statusH + 'px';
   const sb = $id('sidebar'), sr = $id('sidebar-resizer');
   sb.style.display = shell.sideVis ? 'flex' : 'none';
+  sb.style.left = AB_W + 'px';
   sb.style.width = shell.sideW + 'px';
   sb.style.bottom = statusH + 'px';
   sr.style.display = shell.sideVis ? 'block' : 'none';
-  sr.style.left = (shell.sideW - 3) + 'px';
+  sr.style.left = (AB_W + shell.sideW - 3) + 'px';
   sr.style.bottom = statusH + 'px';
-  const left = shell.sideVis ? shell.sideW : 0;
+  // sidebar view + activity bar state
+  const titles = { workspace: 'Workspace', stats: 'Statistics', info: 'Info' };
+  $id('sideTitle').textContent = titles[shell.sideView];
+  for (const v of Object.keys(titles))
+    $id('sv-' + v).style.display = shell.sideView === v ? '' : 'none';
+  document.querySelectorAll('.ab-item').forEach(a =>
+      a.classList.toggle('active',
+                         shell.sideVis && a.dataset.view === shell.sideView));
+  const left = AB_W + (shell.sideVis ? shell.sideW : 0);
   const p = $id('panel'), pr = $id('panel-resizer');
   const panelH = shell.panelCol ? 32 : shell.panelH;  // collapsed = tab bar
   p.classList.toggle('collapsed', shell.panelCol);
@@ -1068,7 +1127,23 @@ function wireResizer(el, onMove) {
   });
 }
 wireResizer($id('sidebar-resizer'),
-    e => shell.sideW = Math.round(Math.min(Math.max(e.clientX, 170), innerWidth * 0.5)));
+    e => shell.sideW = Math.round(Math.min(Math.max(e.clientX - AB_W, 170),
+                                           innerWidth * 0.5)));
+
+/* activity bar: click switches the sidebar view; clicking the active icon
+   collapses the sidebar; clicking while collapsed opens it on that view */
+function setSideView(v) {
+  if (shell.sideVis && shell.sideView === v) {
+    shell.sideVis = false;
+  } else {
+    shell.sideView = v;
+    shell.sideVis = true;
+  }
+  applyShell();
+  renderSidebar();
+}
+document.querySelectorAll('.ab-item').forEach(a =>
+    a.addEventListener('click', () => setSideView(a.dataset.view)));
 wireResizer($id('panel-resizer'),
     e => shell.panelH = Math.round(Math.min(Math.max(
         innerHeight - (shell.statusVis ? 38 : 0) - e.clientY, 96), innerHeight * 0.6)));
