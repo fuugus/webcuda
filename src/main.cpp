@@ -358,22 +358,23 @@ bool onQuery(const std::string& req, std::string& resp) {
 }
 
 void onCursorChange(int cefType) {
-  // cef_cursor_type_t values we care about
+  // cef_cursor_type_t order: POINTER, CROSS, HAND, IBEAM, WAIT, HELP,
+  // EAST(6), NORTH(7), NORTHEAST(8), NORTHWEST(9), SOUTH(10), SOUTHEAST(11),
+  // SOUTHWEST(12), WEST(13), NORTHSOUTH(14), EASTWEST(15),
+  // NORTHEASTSOUTHWEST(16), NORTHWESTSOUTHEAST(17), COLUMN(18), ROW(19),
+  // ... MOVE(29), ... NOTALLOWED(38), ... GRAB(41), GRABBING(42)
   SDL_Cursor* c = g.cursors[0];
   switch (cefType) {
-    case 0: c = g.cursors[0]; break;   // CT_POINTER
-    case 1: c = g.cursors[2]; break;   // CT_CROSS
-    case 2: c = g.cursors[3]; break;   // CT_HAND
-    case 3: c = g.cursors[1]; break;   // CT_IBEAM
-    case 6: case 13: case 14: c = g.cursors[4]; break;  // E/W resize
-    case 7: case 10: c = g.cursors[5]; break;           // N/S resize
-    case 8: case 12: c = g.cursors[7]; break;           // NE/SW
-    case 9: case 11: c = g.cursors[6]; break;           // NW/SE
-    case 15: c = g.cursors[5]; break;  // NS
-    case 16: c = g.cursors[4]; break;  // EW
-    case 17: c = g.cursors[7]; break;  // NESW
-    case 18: c = g.cursors[6]; break;  // NWSE
-    case 35: c = g.cursors[8]; break;  // CT_MOVE-ish
+    case 0: c = g.cursors[0]; break;                     // pointer
+    case 1: c = g.cursors[2]; break;                     // cross
+    case 2: c = g.cursors[3]; break;                     // hand
+    case 3: c = g.cursors[1]; break;                     // ibeam
+    case 6: case 13: case 15: case 18: c = g.cursors[4]; break;  // EW
+    case 7: case 10: case 14: case 19: c = g.cursors[5]; break;  // NS
+    case 8: case 12: case 16: c = g.cursors[7]; break;           // NESW
+    case 9: case 11: case 17: c = g.cursors[6]; break;           // NWSE
+    case 29: case 41: case 42: c = g.cursors[8]; break;  // move/grab
+    case 38: c = g.cursors[9]; break;                    // not-allowed
     default: c = g.cursors[0]; break;
   }
   g.webCursor = c;
