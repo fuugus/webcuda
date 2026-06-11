@@ -4,6 +4,7 @@
 
 #include <SDL3/SDL_keycode.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -272,6 +273,21 @@ int g_argc = 0;
 char** g_argv = nullptr;
 bool g_cefInitialized = false;
 
+// stretch-sentinel state (see Overlay::uploadDirty / ui/index.html)
+constexpr int kSentinelX = 1, kSentinelY = 300;
+uint8_t g_sentinel[4] = {};
+bool g_sentinelLearned = false;
+bool g_resizeActive = false;
+uint64_t g_skippedUploads = 0;
+
+const uint8_t* sentinelPixel() {
+  if (!g_client || g_client->mirror_.empty()) return nullptr;
+  if (kSentinelY >= g_client->mirrorH_ || kSentinelX >= g_client->mirrorW_)
+    return nullptr;
+  return g_client->mirror_.data() +
+         ((size_t)kSentinelY * g_client->mirrorW_ + kSentinelX) * 4;
+}
+
 CefRefPtr<CefBrowserHost> host() {
   return g_client && g_client->browser_ ? g_client->browser_->GetHost()
                                         : nullptr;
@@ -450,6 +466,18 @@ bool Overlay::uiAt(int x, int y) const {
   return a > 24;
 }
 
+int Overlay::probeAlphaEdge(int x, int y0, int y1, bool opaque) const {
+  if (!g_client || g_client->mirror_.empty()) return -1;
+  const int mw = g_client->mirrorW_, mh = g_client->mirrorH_;
+  if (x < 0 || x >= mw) return -1;
+  y1 = std::min(y1, mh);
+  for (int y = std::max(0, y0); y < y1; y++) {
+    bool hit = g_client->mirror_[((size_t)y * mw + x) * 4 + 3] > 200;
+    if (hit == opaque) return y;
+  }
+  return -1;
+}
+
 bool Overlay::loaded() const { return g_client && g_client->loaded_; }
 
 void Overlay::runJS(const std::string& code) {
@@ -459,9 +487,28 @@ void Overlay::runJS(const std::string& code) {
   }
 }
 
+void Overlay::setResizeActive(bool active) { g_resizeActive = active; }
+uint64_t Overlay::skippedUploads() const { return g_skippedUploads; }
+
 double Overlay::uploadDirty() {
   if (!g_client || g_client->dirty_.empty() || g_client->mirror_.empty())
     return 0.0;
+
+  // Stretch filter: during a live resize Chromium delivers transitional
+  // frames with the previous layout scaled to the new size; displaying them
+  // makes the UI jump. The sentinel is byte-exact only in clean relayouts.
+  if (const uint8_t* sp = sentinelPixel()) {
+    if (g_resizeActive && g_sentinelLearned) {
+      if (std::memcmp(sp, g_sentinel, 4) != 0) {
+        g_skippedUploads++;  // keep dirty_; a clean frame uploads it all
+        return 0.0;
+      }
+    } else if (!g_resizeActive && sp[3] != 0) {
+      std::memcpy(g_sentinel, sp, 4);
+      g_sentinelLearned = true;
+    }
+  }
+
   auto t0 = std::chrono::steady_clock::now();
 
   glBindTexture(GL_TEXTURE_2D, tex_);

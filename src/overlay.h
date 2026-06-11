@@ -55,12 +55,25 @@ class Overlay {
   // True if the overlay has visible content (alpha > threshold) at the pixel.
   bool uiAt(int x, int y) const;
 
+  // Diagnostic: scans the CPU mirror column x from y0 to y1; returns the
+  // first row whose alpha crosses 200 (rising if `opaque`, falling if not),
+  // or -1. Used by the resize self-test to detect UI movement in Chromium's
+  // own output.
+  int probeAlphaEdge(int x, int y0, int y1, bool opaque) const;
+
   bool loaded() const;
   void runJS(const std::string& code);
 
   // Upload pending dirty rects into the GL texture. Returns ms spent (0 if
   // nothing was dirty). Call with the GL context current.
+  // While resize-active, frames failing the stretch-sentinel check (see
+  // ui/index.html) are skipped: Chromium emits transitional frames with the
+  // old layout stretched to the new viewport, which made UI elements jump
+  // vertically during live resize. Skipped frames stay dirty and upload as
+  // soon as a clean relayout arrives.
   double uploadDirty();
+  void setResizeActive(bool active);
+  uint64_t skippedUploads() const;
 
   unsigned texture() const { return tex_; }
   int texWidth() const { return texW_; }

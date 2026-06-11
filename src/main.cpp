@@ -66,7 +66,14 @@ struct AppState {
   // (arg: advance the simulation?)
   std::function<bool(bool)> render;
   double lastResizeTime = -1e9;
+  uint64_t presentCount = 0;
   bool pendingShot = false;
+
+  // resize probe (selftest): tracks UI element rows in Chromium's output
+  // while the window height oscillates — distinguishes "Chromium moved the
+  // boxes" from compositing/presentation artifacts
+  int probeBarMin = 1 << 20, probeBarMax = -1;
+  int probeBoxMin = 1 << 20, probeBoxMax = -1;
 
   // stats
   double fps = 0, frameMs = 0;
@@ -612,27 +619,21 @@ int main(int argc, char** argv) {
   auto tPaintWindow = tPrev;
   uint64_t paintWindowStart = 0;
   uint64_t frame = 0;
-  bool swapFast = false;
-  double lastPresent = 0, lastSimStep = 0;
+  double lastSimStep = 0;
 
   g.render = [&](bool stepSim) -> bool {
     g.overlay.pumpWork();
     if (g.fbW <= 0 || g.fbH <= 0) return false;
     double now = nowSec();
 
-    // While the user drags a border, drop vsync: the loop then turns around
-    // in a couple of ms instead of being quantized to 16 ms hops, and the
-    // WM's sync handshake gets its acknowledgments with minimal latency.
+    // Vsync stays ON even during interactive resize. The WM's sync request is
+    // acknowledged inside SDL_GL_SwapWindow; with vsync off the swap returns
+    // while the frame is still queued, the ack races ahead of the actual
+    // present, and the compositor shows a stale-size buffer — visible as the
+    // UI boxes jumping vertically. A blocking swap keeps ack ≈ present, and
+    // the sync protocol itself paces the resize to our frame rate.
     bool fast = now - g.lastResizeTime < 0.25;
-    if (fast != swapFast) {
-      SDL_GL_SetSwapInterval(fast ? 0 : 1);
-      swapFast = fast;
-    }
-    // ...but never run unpaced: an uncapped loop floods CEF, the GPU and the
-    // compositor — queues absorb it briefly, then presentation turns erratic.
-    // Cap presents at ~2x refresh; the CEF pump above still runs every call.
-    if (fast && now - lastPresent < 0.5 / hz) return false;
-    lastPresent = now;
+    g.overlay.setResizeActive(fast);
 
     g.overlay.beginFrame();  // exactly one begin-frame per presented frame
 
@@ -685,6 +686,8 @@ int main(int argc, char** argv) {
       g.pendingShot = false;
     }
     SDL_GL_SwapWindow(g.window);  // also acks the WM's resize sync request
+    if (fast) glFinish();  // ensure the present completed before the next ack
+    g.presentCount++;
 
     if (!stepSim || fast) return true;  // resize/callback frames: no stats
 
@@ -715,13 +718,17 @@ int main(int argc, char** argv) {
   };
 
   while (!g.shouldQuit) {
+    uint64_t pc0 = g.presentCount;
     SDL_Event e;
     while (SDL_PollEvent(&e)) handleEvent(e);
     if (g.shouldQuit) break;
 
-    bool presented = g.render(true);
-    if (!presented) {  // present was paced out (resize fast mode): don't spin
-      SDL_Delay(1);
+    // a resize/expose event may have rendered already; with vsync on, a
+    // second swap this cycle would just block and add latency
+    bool presented =
+        g.presentCount != pc0 ? true : g.render(true);
+    if (!presented) {  // nothing rendered (e.g. zero-size window): don't spin
+      SDL_Delay(4);
       continue;
     }
 
@@ -771,18 +778,43 @@ int main(int argc, char** argv) {
           }
           break;
         }
-        case 3:  // exercise the live-resize path before the screenshot
+        case 3: {  // oscillating live resize + probe: do the UI boxes move?
           g.selftestFrame++;
-          if (g.selftestFrame == 10) {
-            int w, h;
-            SDL_GetWindowSize(g.window, &w, &h);
-            SDL_SetWindowSize(g.window, w + 240, h - 120);
+          int w, h;
+          SDL_GetWindowSize(g.window, &w, &h);
+          // frames 1..40: settle (drag-tail pointer events must drain first,
+          // or leftover box motion contaminates the probe)
+          if (g.selftestFrame > 40 && g.selftestFrame <= 80)
+            SDL_SetWindowSize(g.window, w, h - 4);
+          else if (g.selftestFrame > 80 && g.selftestFrame <= 120)
+            SDL_SetWindowSize(g.window, w + 6, h + 4);
+          if (g.selftestFrame > 40) {
+            // probe Chromium's output (CPU mirror): topbar bottom edge at the
+            // left margin, dragged sim-window top edge at its titlebar column
+            int bar = g.overlay.probeAlphaEdge(12, 20, 120, false);
+            int box = g.overlay.probeAlphaEdge(
+                (int)(g.dragPointX + g.dragFrames * 2.0), 45, g.fbH - 10, true);
+            if (bar >= 0) {
+              g.probeBarMin = std::min(g.probeBarMin, bar);
+              g.probeBarMax = std::max(g.probeBarMax, bar);
+            }
+            if (box >= 0) {
+              g.probeBoxMin = std::min(g.probeBoxMin, box);
+              g.probeBoxMax = std::max(g.probeBoxMax, box);
+            }
           }
-          if (g.selftestFrame >= 60) {
+          if (g.selftestFrame >= 130) {
+            std::printf(
+                "[selftest] resize probe: topbar bottom %d..%d (drift %d), "
+                "box top %d..%d (drift %d), stretched frames filtered: %llu\n",
+                g.probeBarMin, g.probeBarMax, g.probeBarMax - g.probeBarMin,
+                g.probeBoxMin, g.probeBoxMax, g.probeBoxMax - g.probeBoxMin,
+                (unsigned long long)g.overlay.skippedUploads());
             g.selftestPhase = 4;
             g.pendingShot = true;
           }
           break;
+        }
         case 4:
           break;
       }

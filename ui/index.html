@@ -133,6 +133,12 @@
   <span class="clock" id="clock"></span>
 </div>
 
+<!-- stretch sentinel: native side skips overlay frames where this 4x2 px
+     marker (invisible, alpha 4/255) is not byte-exact at y=300 — those are
+     Chromium's stretched transitional frames during live resize -->
+<div style="position:fixed;left:0;top:300px;width:4px;height:2px;
+            background:rgba(64,128,192,0.016);pointer-events:none;z-index:9999"></div>
+
 <template id="wctl-tpl">
   <div id="wctl">
     <button class="min" title="minimize">
