@@ -22,6 +22,7 @@ struct GLFns {
   PFNGLGETUNIFORMLOCATIONPROC  GetUniformLocation;
   PFNGLUNIFORM1IPROC           Uniform1i;
   PFNGLUNIFORM1FPROC           Uniform1f;
+  PFNGLUNIFORM2FPROC           Uniform2f;
   PFNGLGENVERTEXARRAYSPROC     GenVertexArrays;
   PFNGLBINDVERTEXARRAYPROC     BindVertexArray;
   PFNGLACTIVETEXTUREPROC       ActiveTexture;

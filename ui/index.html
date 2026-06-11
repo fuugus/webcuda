@@ -284,6 +284,11 @@ function clamp(st) {
   st.y = Math.min(Math.max(st.y, 38), innerHeight - 24);
 }
 
+// keep windows reachable when the OS window shrinks
+window.addEventListener('resize', () => {
+  for (const st of Object.values(wins)) { clamp(st); apply(st); }
+});
+
 document.querySelectorAll('#topbar [data-toggle]').forEach(b => {
   b.addEventListener('click', () => {
     const el = wins[b.dataset.toggle].el;

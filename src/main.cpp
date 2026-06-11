@@ -402,11 +402,19 @@ void main() {
   gl_Position = vec4(p, 0.0, 1.0);
 })";
 
+// uvScale maps screen pixels to texture pixels. (1,1) stretches to fill;
+// (fbW/texW, fbH/texH) samples pixel-exact anchored top-left, which keeps the
+// UI rock-solid during live resize while CEF repaints lag the window size.
 const char* kFS = R"(#version 330 core
 in vec2 uv;
 out vec4 frag;
 uniform sampler2D tex;
-void main() { frag = texture(tex, uv); })";
+uniform vec2 uvScale;
+void main() {
+  vec2 t = uv * uvScale;
+  if (t.x > 1.0 || t.y > 1.0) discard;
+  frag = texture(tex, t);
+})";
 
 }  // namespace
 
@@ -508,6 +516,7 @@ int main(int argc, char** argv) {
   unsigned vao = 0;
   glf.GenVertexArrays(1, &vao);
   int texLoc = glf.GetUniformLocation(prog, "tex");
+  int uvScaleLoc = glf.GetUniformLocation(prog, "uvScale");
 
   // monitor refresh -> overlay frame rate
   const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
@@ -602,8 +611,14 @@ int main(int argc, char** argv) {
           }
           break;
         }
-        case 3:
-          if (++g.selftestFrame >= 30) g.selftestPhase = 4;
+        case 3:  // exercise the live-resize path before the screenshot
+          g.selftestFrame++;
+          if (g.selftestFrame == 10) {
+            int w, h;
+            glfwGetWindowSize(g.window, &w, &h);
+            glfwSetWindowSize(g.window, w + 240, h - 120);
+          }
+          if (g.selftestFrame >= 60) g.selftestPhase = 4;
           break;
       }
     }
@@ -630,13 +645,18 @@ int main(int argc, char** argv) {
       glf.ActiveTexture(GL_TEXTURE0);
       glf.Uniform1i(texLoc, 0);
 
-      glDisable(GL_BLEND);
+      glDisable(GL_BLEND);  // simulation: stretch to fill
+      glf.Uniform2f(uvScaleLoc, 1.f, 1.f);
       glBindTexture(GL_TEXTURE_2D, simTex);
       glDrawArrays(GL_TRIANGLES, 0, 3);
 
       glEnable(GL_BLEND);  // CEF output is premultiplied alpha
       glf.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
                             GL_ONE_MINUS_SRC_ALPHA);
+      // overlay: pixel-exact, top-left anchored (no rubber-banding while
+      // CEF's repaint chases the window size during live resize)
+      glf.Uniform2f(uvScaleLoc, (float)g.fbW / g.overlay.texWidth(),
+                    (float)g.fbH / g.overlay.texHeight());
       glBindTexture(GL_TEXTURE_2D, g.overlay.texture());
       glDrawArrays(GL_TRIANGLES, 0, 3);
       glDisable(GL_BLEND);

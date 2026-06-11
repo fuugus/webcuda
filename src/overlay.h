@@ -63,6 +63,8 @@ class Overlay {
   double uploadDirty();
 
   unsigned texture() const { return tex_; }
+  int texWidth() const { return texW_; }
+  int texHeight() const { return texH_; }
   uint64_t paintCount() const;  // total OnPaint calls (for diagnostics)
 
  private:
