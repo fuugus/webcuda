@@ -48,10 +48,7 @@
   #topbar .spacer { flex:1; }
 
   /* ---------- menubar + menus ---------- */
-  #menubar {
-    display:flex; align-items:stretch; align-self:stretch;
-    position:relative; z-index:1001; /* stays clickable above the catcher */
-  }
+  #menubar { display:flex; align-items:stretch; align-self:stretch; }
   .mb-item {
     display:flex; align-items:center; padding:0 11px; margin:5px 1px;
     font-size:12.5px; color:#cdd6e4; border-radius:5px; cursor:default;
@@ -78,7 +75,6 @@
   .menu .mi .sub { position:absolute; right:9px; display:flex; }
   .menu .mi svg { width:10px; height:10px; }
   .menu .sep { height:1px; margin:4px 10px; background:rgba(255,255,255,.08); }
-  #menu-catcher { position:fixed; inset:0; z-index:1000; background:transparent; }
   #topbar .hint { font-size:11px; color:#7c8699; }
   #topbar .clock { font-variant-numeric:tabular-nums; color:#9fb0c8; margin-left:14px; }
 
@@ -574,16 +570,17 @@ const CHK = '<svg viewBox="0 0 10 10"><path d="M1.5 5.2l2.4 2.4 4.6-5" stroke="c
 const SUB = '<svg viewBox="0 0 10 10"><path d="M3.4 2l3.2 3-3.2 3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const menuStack = [];  // {el, items:[{el,spec}], focus}
-let menuCatcher = null, menubarActive = null;
+let menubarActive = null;
 
 function closeMenusFrom(depth) {
   while (menuStack.length > depth) menuStack.pop().el.remove();
 }
 function closeMenus() {
+  const wasOpen = menuStack.length > 0;
+  if (typeof menuCloseTimer !== 'undefined') clearTimeout(menuCloseTimer);
   closeMenusFrom(0);
-  if (menuCatcher) { menuCatcher.remove(); menuCatcher = null; }
   if (menubarActive) { menubarActive.classList.remove('active'); menubarActive = null; }
-  send('ui modal 0');
+  if (wasOpen) send('ui modal 0');
 }
 function setMenuFocus(level, idx) {
   const lv = menuStack[level];
@@ -645,6 +642,7 @@ function openMenuLevel(spec, x, y) {
     items.push({ el, spec: it });
     m.appendChild(el);
   }
+  m.addEventListener('pointerenter', () => cancelMenuClose());
   document.body.appendChild(m);
   x = Math.min(Math.max(4, x), innerWidth - m.offsetWidth - 4);
   y = Math.min(Math.max(4, y), innerHeight - m.offsetHeight - 4);
@@ -653,22 +651,27 @@ function openMenuLevel(spec, x, y) {
   menuStack.push({ el: m, items, focus: -1 });
 }
 
+// No full-screen catcher element: the fixed topbar forms a stacking context,
+// so any overlay would shadow the menubar regardless of z-index (hover/click
+// switching silently broke). Click-away and hover-away are handled with
+// document-level capture listeners instead; the native side routes all input
+// to the web layer while menus are open ("ui modal").
 function openRootMenu(spec, x, y) {
+  const wasOpen = menuStack.length > 0;
   closeMenusFrom(0);
-  if (!menuCatcher) {
-    menuCatcher = document.createElement('div');
-    menuCatcher.id = 'menu-catcher';
-    menuCatcher.addEventListener('pointerdown', () => closeMenus());
-    menuCatcher.addEventListener('contextmenu', e => {
-      e.preventDefault();
-      closeMenus();
-      openContextMenu(e.clientX, e.clientY);
-    });
-    document.body.appendChild(menuCatcher);
-    send('ui modal 1');  // native: route all input to the web layer
-  }
+  if (menubarActive) { menubarActive.classList.remove('active'); menubarActive = null; }
+  if (!wasOpen) send('ui modal 1');
   openMenuLevel(spec, x, y);
 }
+
+document.addEventListener('pointerdown', e => {
+  if (menuStack.length && !e.target.closest('.menu, #menubar')) closeMenus();
+}, true);
+document.addEventListener('pointermove', e => {
+  if (!menubarActive) return;
+  if (e.target.closest('.menu, #menubar')) cancelMenuClose();
+  else scheduleMenuClose();  // re-arms: closes 600ms after leaving the menu
+}, true);
 
 /* keyboard navigation (VS Code-style) */
 document.addEventListener('keydown', e => {
@@ -762,11 +765,25 @@ const MENUS = {
 };
 
 function openBarMenu(b) {
-  closeMenus();
+  // atomic swap within one task: switching menus paints in a single frame
+  cancelMenuClose();
   const r = b.getBoundingClientRect();
   openRootMenu(MENUS[b.dataset.menu](), Math.round(r.left), 38);
   menubarActive = b;
   b.classList.add('active');
+}
+
+// menubar menus open on hover and close shortly after the pointer leaves
+// both the menu and the bar (context menus are unaffected)
+let menuCloseTimer = null;
+function scheduleMenuClose() {
+  if (!menubarActive) return;
+  clearTimeout(menuCloseTimer);
+  menuCloseTimer = setTimeout(closeMenus, 600);
+}
+function cancelMenuClose() {
+  clearTimeout(menuCloseTimer);
+  menuCloseTimer = null;
 }
 document.querySelectorAll('#menubar .mb-item').forEach(b => {
   b.addEventListener('pointerdown', e => {
@@ -774,7 +791,8 @@ document.querySelectorAll('#menubar .mb-item').forEach(b => {
     menubarActive === b ? closeMenus() : openBarMenu(b);
   });
   b.addEventListener('pointerenter', () => {
-    if (menubarActive && menubarActive !== b) openBarMenu(b);
+    cancelMenuClose();
+    if (menubarActive !== b) openBarMenu(b);
   });
 });
 

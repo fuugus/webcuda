@@ -693,6 +693,9 @@ int main(int argc, char** argv) {
     }
 
     // ---- web overlay dirty-rect upload ----
+    // second pump: collect paints the renderer finished within this frame
+    // instead of next iteration — saves a full frame of UI input latency
+    g.overlay.pumpWork();
     double upMs = g.overlay.uploadDirty();
     if (upMs > 0) g.uploadMsAvg = g.uploadMsAvg * 0.9 + upMs * 0.1;
 
