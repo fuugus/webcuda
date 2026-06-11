@@ -134,6 +134,13 @@
   }
   #panel-tabs button:hover { background:rgba(255,255,255,.08); color:#fff; }
   #panel-tabs button svg { width:10px; height:10px; }
+  /* collapse chevron: down = will fold down, up = will unfold (same icon
+     component as the floating windows) */
+  #panel-collapse svg { transition:transform .12s ease; transform:rotate(180deg); }
+  #panel.collapsed #panel-collapse svg { transform:rotate(0deg); }
+  #panel.collapsed .pview { display:none; }
+  #panel.collapsed #panel-tabs { border-bottom:none; }
+  #panel.collapsed .ptab.active { border-bottom-color:transparent; }
   .pview { flex:1; overflow:auto; padding:8px 14px; }
   .pview.hidden { display:none; }
   .log-line { font:11.5px/1.7 ui-monospace, "Cascadia Mono", monospace; color:#aab4c6; }
@@ -298,6 +305,9 @@
     <div class="ptab" data-tab="stats">Stats</div>
     <div class="ptab" data-tab="keys">Shortcuts</div>
     <span class="spacer"></span>
+    <button id="panel-collapse" title="collapse panel">
+      <svg viewBox="0 0 10 10"><path d="M2 6.6l3-3.2 3 3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <button id="panel-close" title="close panel">
       <svg viewBox="0 0 10 10"><path d="M1.8 1.8l6.4 6.4M8.2 1.8l-6.4 6.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
     </button>
@@ -1002,7 +1012,8 @@ document.addEventListener('contextmenu', e => {
 });
 
 /* ---------------- shell: sidebar, bottom panel, status bar ---------------- */
-const shell = { sideW: 250, sideVis: true, panelH: 220, panelVis: true, statusVis: true };
+const shell = { sideW: 250, sideVis: true, panelH: 220, panelVis: true,
+                panelCol: false, statusVis: true };
 window.shellState = shell;  // safe reference for code that runs before this block
 const $id = id => document.getElementById(id);
 
@@ -1018,14 +1029,16 @@ function applyShell() {
   sr.style.bottom = statusH + 'px';
   const left = shell.sideVis ? shell.sideW : 0;
   const p = $id('panel'), pr = $id('panel-resizer');
+  const panelH = shell.panelCol ? 32 : shell.panelH;  // collapsed = tab bar
+  p.classList.toggle('collapsed', shell.panelCol);
   p.style.display = shell.panelVis ? 'flex' : 'none';
   p.style.left = left + 'px';
-  p.style.height = shell.panelH + 'px';
+  p.style.height = panelH + 'px';
   p.style.bottom = statusH + 'px';
-  pr.style.display = shell.panelVis ? 'block' : 'none';
+  pr.style.display = shell.panelVis && !shell.panelCol ? 'block' : 'none';
   pr.style.left = left + 'px';
   pr.style.right = '0';
-  pr.style.bottom = (statusH + shell.panelH - 3) + 'px';
+  pr.style.bottom = (statusH + panelH - 3) + 'px';
 }
 function toggleSidebar() {
   shell.sideVis = !shell.sideVis;
@@ -1061,14 +1074,22 @@ wireResizer($id('panel-resizer'),
         innerHeight - (shell.statusVis ? 38 : 0) - e.clientY, 96), innerHeight * 0.6)));
 
 /* bottom panel tabs */
+function setPanelCollapsed(c) {
+  shell.panelCol = c;
+  $id('panel-collapse').title = c ? 'expand panel' : 'collapse panel';
+  applyShell();
+}
 document.querySelectorAll('.ptab').forEach(t => {
   t.addEventListener('click', () => {
     document.querySelectorAll('.ptab').forEach(n => n.classList.remove('active'));
     t.classList.add('active');
     document.querySelectorAll('.pview').forEach(v =>
         v.classList.toggle('hidden', v.id !== 'view-' + t.dataset.tab));
+    if (shell.panelCol) setPanelCollapsed(false);  // tab click auto-opens
   });
 });
+$id('panel-collapse').addEventListener('click',
+    () => setPanelCollapsed(!shell.panelCol));
 $id('panel-close').addEventListener('click', togglePanel);
 
 /* log view */
