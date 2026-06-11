@@ -2,25 +2,27 @@
 //   CUDA simulation -> OpenGL texture (zero-copy interop)
 //   CEF web overlay -> transparent UI layer in the same swapchain
 //
-// One OS window. The web layer provides draggable/resizable in-app windows;
-// input is routed to web or simulation based on overlay alpha under cursor.
+// One OS window (SDL3). The web layer provides draggable/resizable in-app
+// windows; input is routed to web or simulation based on overlay alpha under
+// the cursor. SDL3's X11 backend implements the _NET_WM_SYNC_REQUEST
+// frame-sync handshake (acknowledged inside SDL_GL_SwapWindow), so the window
+// manager waits for our frame on every interactive resize step — no mismatch
+// frames, no jitter.
 
 #include <X11/Xlib.h>
+
+#include <SDL3/SDL.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "gl_funcs.h"
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_X11
-#include <GLFW/glfw3native.h>
-
 #include "overlay.h"
 #include "sim.h"
 
@@ -30,13 +32,19 @@
 namespace {
 
 struct AppState {
-  GLFWwindow* window = nullptr;
+  SDL_Window* window = nullptr;
+  SDL_GLContext glctx = nullptr;
   Overlay overlay;
   SimParams params;
   SimStats simStats;
 
+  // native X11 handles (frameless move/resize protocol); null off X11
+  Display* xdpy = nullptr;
+  ::Window xwin = 0;
+
   int fbW = 0, fbH = 0;
   int simW = 0, simH = 0;
+  int hz = 60;
 
   // input routing
   double mouseX = 0, mouseY = 0;
@@ -44,31 +52,30 @@ struct AppState {
   bool webCaptured = false;    // mouse-down started on web UI
   bool sceneCaptured = false;  // mouse-down started on simulation
   bool webFocused = false;
-  int glfwMods = 0;
-  double lastClickTime = 0;
-  double lastClickX = 0, lastClickY = 0;
-  int clickCount = 1;
 
   // cursors
-  GLFWcursor* cursors[10] = {};
-  GLFWcursor* webCursor = nullptr;
-  GLFWcursor* current = nullptr;
-
-  // windowed <-> fullscreen
-  int savedX = 0, savedY = 0, savedW = 0, savedH = 0;
+  SDL_Cursor* cursors[10] = {};
+  SDL_Cursor* webCursor = nullptr;
+  SDL_Cursor* current = nullptr;
 
   // frameless mode (default): web header bar owns move/minimize/maximize/close
   bool frameless = true;
 
+  // renders one frame, returns true if it actually presented; callable from
+  // resize/expose events for low-latency redraws during interactive resize
+  // (arg: advance the simulation?)
+  std::function<bool(bool)> render;
+  double lastResizeTime = -1e9;
+  bool pendingShot = false;
+
   // stats
   double fps = 0, frameMs = 0;
-  uint64_t lastPaintCount = 0;
   double paintsPerSec = 0;
   double uploadMsAvg = 0;
 
   // selftest
   bool selftest = false;
-  int selftestPhase = 0;  // 0 wait-ready, 1 settle, 2 drag, 3 settle, 4 done
+  int selftestPhase = 0;  // 0 wait-ready, 1 settle, 2 drag, 3 resize, 4 done
   int selftestFrame = 0;
   double dragPointX = -1, dragPointY = -1;
   uint64_t dragStartPaints = 0;
@@ -82,6 +89,8 @@ struct AppState {
 
 AppState g;
 
+double nowSec() { return SDL_GetTicksNS() * 1e-9; }
+
 std::string exeDir() {
   char buf[PATH_MAX];
   ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
@@ -93,13 +102,24 @@ std::string exeDir() {
 }
 
 uint32_t mods() {
-  return cefModifiersFromGlfw(g.glfwMods, g.btn[0], g.btn[1], g.btn[2]);
+  return cefModifiersFromSDL(SDL_GetModState(), g.btn[0], g.btn[1], g.btn[2]);
 }
 
 void brushAt(double x, double y) {
   double sx = x / std::max(1, g.fbW) * g.simW;
   double sy = y / std::max(1, g.fbH) * g.simH;
   simBrush((float)sx, (float)sy, g.params.brushRadius);
+}
+
+void setWebFocus(bool focused) {
+  if (g.webFocused == focused) return;
+  g.webFocused = focused;
+  g.overlay.setFocus(focused);
+  // text-input events (and IME) only while a web element can take them
+  if (focused)
+    SDL_StartTextInput(g.window);
+  else
+    SDL_StopTextInput(g.window);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,13 +134,14 @@ enum {  // _NET_WM_MOVERESIZE directions
 };
 
 bool canMoveResize() {
-  return g.frameless && glfwGetPlatform() == GLFW_PLATFORM_X11 &&
-         !glfwGetWindowMonitor(g.window);
+  return g.frameless && g.xdpy &&
+         !(SDL_GetWindowFlags(g.window) & SDL_WINDOW_FULLSCREEN);
 }
 
 // Direction for the resize border under the cursor, or -1.
 int edgeDir(double x, double y) {
-  if (!canMoveResize() || glfwGetWindowAttrib(g.window, GLFW_MAXIMIZED))
+  if (!canMoveResize() ||
+      (SDL_GetWindowFlags(g.window) & SDL_WINDOW_MAXIMIZED))
     return -1;
   const int B = 6;
   bool l = x < B, r = x > g.fbW - B, t = y < B, b = y > g.fbH - B;
@@ -138,37 +159,35 @@ int edgeDir(double x, double y) {
 void startWmMoveResize(int dir) {
   if (!canMoveResize()) return;
 
-  // The WM takes over the pointer: GLFW will never see the button release.
+  // The WM takes over the pointer: we will never see the button release.
   // Settle our own state and the web layer's first.
   if (g.btn[0]) g.overlay.mouseButton((int)g.mouseX, (int)g.mouseY, 0, false, 1, 0);
   g.btn[0] = g.btn[1] = g.btn[2] = false;
   g.webCaptured = g.sceneCaptured = false;
 
-  Display* dpy = glfwGetX11Display();
-  ::Window win = glfwGetX11Window(g.window);
   int wx = 0, wy = 0;
-  glfwGetWindowPos(g.window, &wx, &wy);
+  SDL_GetWindowPosition(g.window, &wx, &wy);
 
-  XUngrabPointer(dpy, CurrentTime);  // release the implicit press grab
+  XUngrabPointer(g.xdpy, CurrentTime);  // release the implicit press grab
   XEvent ev{};
   ev.xclient.type = ClientMessage;
-  ev.xclient.window = win;
-  ev.xclient.message_type = XInternAtom(dpy, "_NET_WM_MOVERESIZE", False);
+  ev.xclient.window = g.xwin;
+  ev.xclient.message_type = XInternAtom(g.xdpy, "_NET_WM_MOVERESIZE", False);
   ev.xclient.format = 32;
   ev.xclient.data.l[0] = wx + (long)g.mouseX;
   ev.xclient.data.l[1] = wy + (long)g.mouseY;
   ev.xclient.data.l[2] = dir;
   ev.xclient.data.l[3] = Button1;
   ev.xclient.data.l[4] = 1;  // source: normal application
-  XSendEvent(dpy, DefaultRootWindow(dpy), False,
+  XSendEvent(g.xdpy, DefaultRootWindow(g.xdpy), False,
              SubstructureRedirectMask | SubstructureNotifyMask, &ev);
-  XFlush(dpy);
+  XFlush(g.xdpy);
 }
 
 // ---------------------------------------------------------------------------
-// GLFW callbacks
+// Input handlers
 // ---------------------------------------------------------------------------
-void onCursorPos(GLFWwindow*, double x, double y) {
+void onMouseMove(double x, double y) {
   g.mouseX = x;
   g.mouseY = y;
   if (!g.sceneCaptured)  // keep hover states correct on the web layer
@@ -177,7 +196,7 @@ void onCursorPos(GLFWwindow*, double x, double y) {
 
   // cursor shape: resize arrows on frameless borders, web cursor over UI,
   // crosshair over the simulation
-  GLFWcursor* want;
+  SDL_Cursor* want;
   int dir = (g.webCaptured || g.sceneCaptured) ? -1 : edgeDir(x, y);
   switch (dir) {
     case kWmSizeTop: case kWmSizeBottom: want = g.cursors[5]; break;
@@ -192,14 +211,12 @@ void onCursorPos(GLFWwindow*, double x, double y) {
   }
   if (want != g.current) {
     g.current = want;
-    glfwSetCursor(g.window, want);
+    SDL_SetCursor(want);
   }
 }
 
-void onMouseButton(GLFWwindow*, int button, int action, int m) {
-  g.glfwMods = m;
-  if (button > 2) return;
-  bool down = action == GLFW_PRESS;
+void onMouseButton(int button, bool down, int clicks) {
+  if (button < 0 || button > 2) return;
   g.btn[button] = down;
 
   if (down) {
@@ -213,38 +230,21 @@ void onMouseButton(GLFWwindow*, int button, int action, int m) {
       }
     }
 
-    // double-click detection (text selection etc.)
-    double t = glfwGetTime();
-    if (t - g.lastClickTime < 0.4 && std::abs(g.mouseX - g.lastClickX) < 4 &&
-        std::abs(g.mouseY - g.lastClickY) < 4)
-      g.clickCount = std::min(3, g.clickCount + 1);
-    else
-      g.clickCount = 1;
-    g.lastClickTime = t;
-    g.lastClickX = g.mouseX;
-    g.lastClickY = g.mouseY;
-
     bool onUi = g.overlay.uiAt((int)g.mouseX, (int)g.mouseY);
     if (onUi) {
       g.webCaptured = true;
-      if (!g.webFocused) {
-        g.webFocused = true;
-        g.overlay.setFocus(true);
-      }
+      setWebFocus(true);
       g.overlay.mouseButton((int)g.mouseX, (int)g.mouseY, button, true,
-                            g.clickCount, mods());
+                            std::clamp(clicks, 1, 3), mods());
     } else {
       g.sceneCaptured = true;
-      if (g.webFocused) {
-        g.webFocused = false;
-        g.overlay.setFocus(false);
-      }
+      setWebFocus(false);
       if (button == 0) brushAt(g.mouseX, g.mouseY);
     }
   } else {
     if (g.webCaptured) {
       g.overlay.mouseButton((int)g.mouseX, (int)g.mouseY, button, false,
-                            g.clickCount, mods());
+                            std::clamp(clicks, 1, 3), mods());
     }
     if (!g.btn[0] && !g.btn[1] && !g.btn[2]) {
       g.webCaptured = false;
@@ -253,7 +253,7 @@ void onMouseButton(GLFWwindow*, int button, int action, int m) {
   }
 }
 
-void onScroll(GLFWwindow*, double dx, double dy) {
+void onScroll(double dx, double dy) {
   if (g.overlay.uiAt((int)g.mouseX, (int)g.mouseY)) {
     g.overlay.mouseWheel((int)g.mouseX, (int)g.mouseY, dx, dy, mods());
   } else {
@@ -263,53 +263,43 @@ void onScroll(GLFWwindow*, double dx, double dy) {
 }
 
 void toggleFullscreen() {
-  GLFWmonitor* mon = glfwGetWindowMonitor(g.window);
-  if (mon) {
-    glfwSetWindowMonitor(g.window, nullptr, g.savedX, g.savedY, g.savedW,
-                         g.savedH, 0);
-  } else {
-    glfwGetWindowPos(g.window, &g.savedX, &g.savedY);
-    glfwGetWindowSize(g.window, &g.savedW, &g.savedH);
-    GLFWmonitor* primary = glfwGetPrimaryMonitor();
-    const GLFWvidmode* mode = glfwGetVideoMode(primary);
-    glfwSetWindowMonitor(g.window, primary, 0, 0, mode->width, mode->height,
-                         mode->refreshRate);
-  }
+  bool fs = SDL_GetWindowFlags(g.window) & SDL_WINDOW_FULLSCREEN;
+  SDL_SetWindowFullscreen(g.window, !fs);
 }
 
-void onKey(GLFWwindow*, int key, int scancode, int action, int m) {
-  g.glfwMods = m;
-  if (action == GLFW_PRESS) {
-    if (key == GLFW_KEY_F11) {
+void onKey(const SDL_KeyboardEvent& e) {
+  if (e.down && !e.repeat) {
+    if (e.key == SDLK_F11) {
       toggleFullscreen();
       return;
     }
-    if (key == GLFW_KEY_ESCAPE && !g.webFocused) {
+    if (e.key == SDLK_ESCAPE && !g.webFocused) {
       g.shouldQuit = true;
       return;
     }
   }
   if (!g.webFocused) return;
-  int wkc = windowsKeyCodeFromGlfw(key);
+  int wkc = windowsKeyCodeFromSDL(e.key);
   if (!wkc) return;
-  if (action == GLFW_PRESS || action == GLFW_REPEAT)
-    g.overlay.keyEvent(true, wkc, scancode, mods());
-  else if (action == GLFW_RELEASE)
-    g.overlay.keyEvent(false, wkc, scancode, mods());
+  uint32_t m = cefModifiersFromSDL(e.mod, g.btn[0], g.btn[1], g.btn[2]);
+  g.overlay.keyEvent(e.down, wkc, e.scancode, m);
 }
 
-void onChar(GLFWwindow*, unsigned codepoint) {
-  if (g.webFocused) g.overlay.charEvent(codepoint, mods());
-}
-
-void onFramebufferSize(GLFWwindow*, int w, int h) {
-  g.fbW = w;
-  g.fbH = h;
-  if (w > 0 && h > 0) g.overlay.resize(w, h);
-}
-
-void onWindowFocus(GLFWwindow*, int focused) {
-  if (g.webFocused) g.overlay.setFocus(focused != 0);
+void onTextInput(const char* utf8) {
+  if (!g.webFocused) return;
+  uint32_t m = mods();
+  for (const unsigned char* p = (const unsigned char*)utf8; *p;) {
+    unsigned cp = 0;
+    int extra = 0;
+    unsigned char c = *p++;
+    if (c < 0x80) cp = c;
+    else if ((c >> 5) == 0x6) { cp = c & 0x1f; extra = 1; }
+    else if ((c >> 4) == 0xe) { cp = c & 0x0f; extra = 2; }
+    else if ((c >> 3) == 0x1e) { cp = c & 0x07; extra = 3; }
+    else continue;
+    while (extra-- > 0 && (*p >> 6) == 0x2) cp = (cp << 6) | (*p++ & 0x3f);
+    g.overlay.charEvent(cp, m);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,12 +326,12 @@ bool onQuery(const std::string& req, std::string& resp) {
     return true;
   }
   if (req == "win drag") { startWmMoveResize(kWmMove); resp = "ok"; return true; }
-  if (req == "win minimize") { glfwIconifyWindow(g.window); resp = "ok"; return true; }
+  if (req == "win minimize") { SDL_MinimizeWindow(g.window); resp = "ok"; return true; }
   if (req == "win maximize") {
-    if (glfwGetWindowAttrib(g.window, GLFW_MAXIMIZED))
-      glfwRestoreWindow(g.window);
+    if (SDL_GetWindowFlags(g.window) & SDL_WINDOW_MAXIMIZED)
+      SDL_RestoreWindow(g.window);
     else
-      glfwMaximizeWindow(g.window);
+      SDL_MaximizeWindow(g.window);
     resp = "ok";
     return true;
   }
@@ -361,7 +351,7 @@ bool onQuery(const std::string& req, std::string& resp) {
 
 void onCursorChange(int cefType) {
   // cef_cursor_type_t values we care about
-  GLFWcursor* c = g.cursors[0];
+  SDL_Cursor* c = g.cursors[0];
   switch (cefType) {
     case 0: c = g.cursors[0]; break;   // CT_POINTER
     case 1: c = g.cursors[2]; break;   // CT_CROSS
@@ -416,14 +406,79 @@ void main() {
   frag = texture(tex, t);
 })";
 
+void handleEvent(const SDL_Event& e) {
+  switch (e.type) {
+    case SDL_EVENT_QUIT:
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+      g.shouldQuit = true;
+      break;
+    case SDL_EVENT_MOUSE_MOTION:
+      onMouseMove(e.motion.x, e.motion.y);
+      break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+      int idx = e.button.button == SDL_BUTTON_LEFT     ? 0
+                : e.button.button == SDL_BUTTON_MIDDLE ? 1
+                : e.button.button == SDL_BUTTON_RIGHT  ? 2
+                                                       : -1;
+      onMouseButton(idx, e.button.down, e.button.clicks);
+      break;
+    }
+    case SDL_EVENT_MOUSE_WHEEL: {
+      double s = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0 : 1.0;
+      onScroll(e.wheel.x * s, e.wheel.y * s);
+      break;
+    }
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+      onKey(e.key);
+      break;
+    case SDL_EVENT_TEXT_INPUT:
+      onTextInput(e.text.text);
+      break;
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
+      bool changed = e.window.data1 != g.fbW || e.window.data2 != g.fbH;
+      g.fbW = e.window.data1;
+      g.fbH = e.window.data2;
+      if (changed && g.fbW > 0 && g.fbH > 0) {
+        g.lastResizeTime = nowSec();
+        g.overlay.resize(g.fbW, g.fbH);
+        // redraw in lockstep with the resize event: SDL acknowledges the
+        // WM's sync request inside this swap, so the compositor displays
+        // exactly this frame for this resize step
+        if (g.render) g.render(false);
+      }
+      break;
+    }
+    case SDL_EVENT_WINDOW_EXPOSED:
+      if (g.render) g.render(false);
+      break;
+    case SDL_EVENT_WINDOW_MOVED:
+      g.overlay.setWindowPos(e.window.data1, e.window.data2);
+      break;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+      if (g.webFocused) g.overlay.setFocus(true);
+      break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+      if (g.webFocused) g.overlay.setFocus(false);
+      break;
+    case SDL_EVENT_WINDOW_MAXIMIZED:
+      g.overlay.runJS("__winState && __winState({maximized:true})");
+      break;
+    case SDL_EVENT_WINDOW_RESTORED:
+      g.overlay.runJS("__winState && __winState({maximized:false})");
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   // CEF subprocesses re-enter this executable; nothing else may run first.
   int sub = Overlay::ExecuteSubProcess(argc, argv);
   if (sub >= 0) return sub;
-
-  XInitThreads();
 
   int winW = 1600, winH = 900;
   bool extBeginFrame = true;
@@ -436,65 +491,71 @@ int main(int argc, char** argv) {
       std::sscanf(argv[++i], "%dx%d", &winW, &winH);
   }
 
-  glfwSetErrorCallback([](int code, const char* msg) {
-    std::fprintf(stderr, "[glfw] error %d: %s\n", code, msg);
-  });
-  glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-  if (!glfwInit()) {
-    glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
-    if (!glfwInit()) {
-      std::fprintf(stderr, "glfwInit failed\n");
+  // Prefer X11: NVIDIA GLX interop is the proven path, and the frameless
+  // move/resize protocol plus _NET_WM_SYNC_REQUEST need it.
+  SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11");
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
+    SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+      std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
       return 1;
     }
   }
-
-  // Frameless mode needs the X11 WM protocol for move/resize; on any other
-  // platform fall back to native decorations.
-  if (g.frameless && glfwGetPlatform() != GLFW_PLATFORM_X11) {
-    std::fprintf(stderr, "[glfw] not on X11 — using native decorations\n");
+  const char* driver = SDL_GetCurrentVideoDriver();
+  std::printf("[sdl] video driver: %s\n", driver);
+  if (g.frameless && std::strcmp(driver, "x11") != 0) {
+    std::fprintf(stderr, "[sdl] not on X11 — using native decorations\n");
     g.frameless = false;
   }
 
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-  glfwWindowHint(GLFW_DECORATED, g.frameless ? GLFW_FALSE : GLFW_TRUE);
-  const char* title = "WebCUDA — CUDA × OpenGL × Web UI";
-  g.window = glfwCreateWindow(winW, winH, title, nullptr, nullptr);
-  if (!g.window && glfwGetPlatform() == GLFW_PLATFORM_X11) {
-    // GLX may be broken (e.g. NVIDIA driver mismatch) while Wayland/EGL works
-    std::fprintf(stderr, "[glfw] X11/GLX context failed, retrying Wayland\n");
-    glfwTerminate();
-    glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
-    g.frameless = false;  // no WM move/resize protocol off X11
-    if (glfwInit()) {
-      glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-      glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-      glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-      g.window = glfwCreateWindow(winW, winH, title, nullptr, nullptr);
-    }
-  }
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+  SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+  if (g.frameless) flags |= SDL_WINDOW_BORDERLESS;
+  g.window = SDL_CreateWindow("WebCUDA — CUDA × OpenGL × Web UI", winW, winH,
+                              flags);
   if (!g.window) {
-    std::fprintf(stderr, "window creation failed\n");
+    std::fprintf(stderr, "window creation failed: %s\n", SDL_GetError());
     return 1;
   }
-  glfwSetWindowSizeLimits(g.window, 720, 420, GLFW_DONT_CARE, GLFW_DONT_CARE);
-  glfwMakeContextCurrent(g.window);
-  glfwSwapInterval(1);
+  SDL_SetWindowMinimumSize(g.window, 720, 420);
+  g.glctx = SDL_GL_CreateContext(g.window);
+  if (!g.glctx || !SDL_GL_MakeCurrent(g.window, g.glctx)) {
+    std::fprintf(stderr, "GL context failed: %s\n", SDL_GetError());
+    return 1;
+  }
+  SDL_GL_SetSwapInterval(1);
   if (!initGLFunctions()) return 1;
   std::printf("[gl] renderer: %s\n", (const char*)glGetString(GL_RENDERER));
 
-  glfwGetFramebufferSize(g.window, &g.fbW, &g.fbH);
+  if (!std::strcmp(driver, "x11")) {
+    SDL_PropertiesID props = SDL_GetWindowProperties(g.window);
+    g.xdpy = (Display*)SDL_GetPointerProperty(
+        props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+    g.xwin = (::Window)SDL_GetNumberProperty(
+        props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+  }
+  if (g.xdpy) {
+    // Anchor stale buffer content top-left during resize (backup for WMs
+    // without the sync protocol; with it, mismatch frames don't occur).
+    XSetWindowAttributes wa{};
+    wa.bit_gravity = NorthWestGravity;
+    XChangeWindowAttributes(g.xdpy, g.xwin, CWBitGravity, &wa);
+  }
+
+  SDL_GetWindowSizeInPixels(g.window, &g.fbW, &g.fbH);
   g.simW = g.fbW;
   g.simH = g.fbH;
 
-  // cursors
-  const int shapes[] = {GLFW_ARROW_CURSOR,       GLFW_IBEAM_CURSOR,
-                        GLFW_CROSSHAIR_CURSOR,   GLFW_POINTING_HAND_CURSOR,
-                        GLFW_RESIZE_EW_CURSOR,   GLFW_RESIZE_NS_CURSOR,
-                        GLFW_RESIZE_NWSE_CURSOR, GLFW_RESIZE_NESW_CURSOR,
-                        GLFW_RESIZE_ALL_CURSOR,  GLFW_NOT_ALLOWED_CURSOR};
-  for (int i = 0; i < 10; i++) g.cursors[i] = glfwCreateStandardCursor(shapes[i]);
+  // cursors (indices match onCursorChange/edge mapping)
+  const SDL_SystemCursor shapes[] = {
+      SDL_SYSTEM_CURSOR_DEFAULT,     SDL_SYSTEM_CURSOR_TEXT,
+      SDL_SYSTEM_CURSOR_CROSSHAIR,   SDL_SYSTEM_CURSOR_POINTER,
+      SDL_SYSTEM_CURSOR_EW_RESIZE,   SDL_SYSTEM_CURSOR_NS_RESIZE,
+      SDL_SYSTEM_CURSOR_NWSE_RESIZE, SDL_SYSTEM_CURSOR_NESW_RESIZE,
+      SDL_SYSTEM_CURSOR_MOVE,        SDL_SYSTEM_CURSOR_NOT_ALLOWED};
+  for (int i = 0; i < 10; i++) g.cursors[i] = SDL_CreateSystemCursor(shapes[i]);
   g.webCursor = g.cursors[0];
 
   // simulation texture (CUDA writes into it)
@@ -519,8 +580,12 @@ int main(int argc, char** argv) {
   int uvScaleLoc = glf.GetUniformLocation(prog, "uvScale");
 
   // monitor refresh -> overlay frame rate
-  const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-  int hz = mode ? std::clamp(mode->refreshRate, 30, 240) : 60;
+  const SDL_DisplayMode* mode =
+      SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+  g.hz = (mode && mode->refresh_rate > 1.f)
+             ? std::clamp((int)std::lround(mode->refresh_rate), 30, 240)
+             : 60;
+  const int hz = g.hz;
 
   Overlay::Config cfg;
   cfg.width = g.fbW;
@@ -537,36 +602,131 @@ int main(int argc, char** argv) {
   std::printf("[cef] overlay up, %d Hz, external begin frames: %s\n", hz,
               extBeginFrame ? "on" : "off");
 
-  glfwSetCursorPosCallback(g.window, onCursorPos);
-  glfwSetMouseButtonCallback(g.window, onMouseButton);
-  glfwSetScrollCallback(g.window, onScroll);
-  glfwSetKeyCallback(g.window, onKey);
-  glfwSetCharCallback(g.window, onChar);
-  glfwSetFramebufferSizeCallback(g.window, onFramebufferSize);
-  glfwSetWindowFocusCallback(g.window, onWindowFocus);
-  glfwSetWindowMaximizeCallback(g.window, [](GLFWwindow*, int maximized) {
-    g.overlay.runJS(maximized ? "__winState && __winState({maximized:true})"
-                              : "__winState && __winState({maximized:false})");
-  });
+  {
+    int wx = 0, wy = 0;
+    SDL_GetWindowPosition(g.window, &wx, &wy);
+    g.overlay.setWindowPos(wx, wy);
+  }
 
   auto tPrev = std::chrono::steady_clock::now();
   auto tPaintWindow = tPrev;
   uint64_t paintWindowStart = 0;
   uint64_t frame = 0;
+  bool swapFast = false;
+  double lastPresent = 0, lastSimStep = 0;
 
-  while (!glfwWindowShouldClose(g.window) && !g.shouldQuit) {
-    glfwPollEvents();
+  g.render = [&](bool stepSim) -> bool {
+    g.overlay.pumpWork();
+    if (g.fbW <= 0 || g.fbH <= 0) return false;
+    double now = nowSec();
 
-    if (glfwGetPlatform() == GLFW_PLATFORM_X11) {  // Wayland has no window pos
-      int wx, wy;
-      glfwGetWindowPos(g.window, &wx, &wy);
-      g.overlay.setWindowPos(wx, wy);
+    // While the user drags a border, drop vsync: the loop then turns around
+    // in a couple of ms instead of being quantized to 16 ms hops, and the
+    // WM's sync handshake gets its acknowledgments with minimal latency.
+    bool fast = now - g.lastResizeTime < 0.25;
+    if (fast != swapFast) {
+      SDL_GL_SetSwapInterval(fast ? 0 : 1);
+      swapFast = fast;
+    }
+    // ...but never run unpaced: an uncapped loop floods CEF, the GPU and the
+    // compositor — queues absorb it briefly, then presentation turns erratic.
+    // Cap presents at ~2x refresh; the CEF pump above still runs every call.
+    if (fast && now - lastPresent < 0.5 / hz) return false;
+    lastPresent = now;
+
+    g.overlay.beginFrame();  // exactly one begin-frame per presented frame
+
+    // ---- CUDA simulation -> GL texture ----
+    // Advance the sim at most at refresh rate so resize frames (and the
+    // uncapped loop) don't fast-forward it; skipped frames only re-colorize.
+    SimParams p = g.params;
+    SimStats scratch;
+    bool advance = stepSim && now - lastSimStep >= 0.7 / hz;
+    if (advance) lastSimStep = now;
+    if (!advance) p.paused = true;
+    simFrame(p, advance ? g.simStats : scratch);
+    if (const unsigned char* px = simPixels()) {  // no-interop fallback
+      glBindTexture(GL_TEXTURE_2D, simTex);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g.simW, g.simH, GL_RGBA,
+                      GL_UNSIGNED_BYTE, px);
     }
 
-    g.overlay.pumpWork();
-    g.overlay.beginFrame();
+    // ---- web overlay dirty-rect upload ----
+    double upMs = g.overlay.uploadDirty();
+    if (upMs > 0) g.uploadMsAvg = g.uploadMsAvg * 0.9 + upMs * 0.1;
+
+    // ---- composite ----
+    glViewport(0, 0, g.fbW, g.fbH);
+    glClearColor(0.02f, 0.02f, 0.03f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glf.UseProgram(prog);
+    glf.BindVertexArray(vao);
+    glf.ActiveTexture(GL_TEXTURE0);
+    glf.Uniform1i(texLoc, 0);
+
+    glDisable(GL_BLEND);  // simulation: stretch to fill
+    glf.Uniform2f(uvScaleLoc, 1.f, 1.f);
+    glBindTexture(GL_TEXTURE_2D, simTex);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glEnable(GL_BLEND);  // CEF output is premultiplied alpha
+    glf.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                          GL_ONE_MINUS_SRC_ALPHA);
+    // overlay: pixel-exact, top-left anchored (no rubber-banding while
+    // CEF's repaint chases the window size during live resize)
+    glf.Uniform2f(uvScaleLoc, (float)g.fbW / g.overlay.texWidth(),
+                  (float)g.fbH / g.overlay.texHeight());
+    glBindTexture(GL_TEXTURE_2D, g.overlay.texture());
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_BLEND);
+
+    if (g.pendingShot) {
+      writePPM(g.shotPath.c_str(), g.fbW, g.fbH);
+      g.pendingShot = false;
+    }
+    SDL_GL_SwapWindow(g.window);  // also acks the WM's resize sync request
+
+    if (!stepSim || fast) return true;  // resize/callback frames: no stats
+
+    // ---- timing / stats ----
+    auto tNow = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(tNow - tPrev).count();
+    tPrev = tNow;
+    g.frameMs = g.frameMs * 0.92 + dt * 1000.0 * 0.08;
+    g.fps = g.fps * 0.92 + (dt > 0 ? 1.0 / dt : 0) * 0.08;
+
+    double paintWin = std::chrono::duration<double>(tNow - tPaintWindow).count();
+    if (paintWin >= 1.0) {
+      g.paintsPerSec = (g.overlay.paintCount() - paintWindowStart) / paintWin;
+      paintWindowStart = g.overlay.paintCount();
+      tPaintWindow = tNow;
+    }
+
+    if (++frame % 15 == 0 && g.overlay.loaded()) {
+      char js[512];
+      std::snprintf(js, sizeof js,
+                    "window.__stats && __stats({fps:%.1f,frameMs:%.2f,"
+                    "cudaMs:%.2f,paints:%.0f,upMs:%.2f,sim:'%dx%d',gpu:'%s'})",
+                    g.fps, g.frameMs, g.simStats.kernelMs, g.paintsPerSec,
+                    g.uploadMsAvg, g.simW, g.simH, simDeviceName());
+      g.overlay.runJS(js);
+    }
+    return true;
+  };
+
+  while (!g.shouldQuit) {
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) handleEvent(e);
+    if (g.shouldQuit) break;
+
+    bool presented = g.render(true);
+    if (!presented) {  // present was paced out (resize fast mode): don't spin
+      SDL_Delay(1);
+      continue;
+    }
 
     // ---- selftest state machine: native-driven drag of a web window ----
+    // (steps once per *presented* frame, never per loop iteration)
     if (g.selftest) {
       switch (g.selftestPhase) {
         case 0:
@@ -615,88 +775,28 @@ int main(int argc, char** argv) {
           g.selftestFrame++;
           if (g.selftestFrame == 10) {
             int w, h;
-            glfwGetWindowSize(g.window, &w, &h);
-            glfwSetWindowSize(g.window, w + 240, h - 120);
+            SDL_GetWindowSize(g.window, &w, &h);
+            SDL_SetWindowSize(g.window, w + 240, h - 120);
           }
-          if (g.selftestFrame >= 60) g.selftestPhase = 4;
+          if (g.selftestFrame >= 60) {
+            g.selftestPhase = 4;
+            g.pendingShot = true;
+          }
+          break;
+        case 4:
           break;
       }
-    }
-
-    // ---- CUDA simulation -> GL texture ----
-    if (g.fbW > 0 && g.fbH > 0) {
-      simFrame(g.params, g.simStats);
-      if (const unsigned char* px = simPixels()) {  // no-interop fallback
-        glBindTexture(GL_TEXTURE_2D, simTex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g.simW, g.simH, GL_RGBA,
-                        GL_UNSIGNED_BYTE, px);
+      if (g.selftestPhase == 4) {
+        if (g.pendingShot) g.render(false);  // flush the screenshot
+        break;
       }
-
-      // ---- web overlay dirty-rect upload ----
-      double upMs = g.overlay.uploadDirty();
-      if (upMs > 0) g.uploadMsAvg = g.uploadMsAvg * 0.9 + upMs * 0.1;
-
-      // ---- composite ----
-      glViewport(0, 0, g.fbW, g.fbH);
-      glClearColor(0.02f, 0.02f, 0.03f, 1.f);
-      glClear(GL_COLOR_BUFFER_BIT);
-      glf.UseProgram(prog);
-      glf.BindVertexArray(vao);
-      glf.ActiveTexture(GL_TEXTURE0);
-      glf.Uniform1i(texLoc, 0);
-
-      glDisable(GL_BLEND);  // simulation: stretch to fill
-      glf.Uniform2f(uvScaleLoc, 1.f, 1.f);
-      glBindTexture(GL_TEXTURE_2D, simTex);
-      glDrawArrays(GL_TRIANGLES, 0, 3);
-
-      glEnable(GL_BLEND);  // CEF output is premultiplied alpha
-      glf.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
-                            GL_ONE_MINUS_SRC_ALPHA);
-      // overlay: pixel-exact, top-left anchored (no rubber-banding while
-      // CEF's repaint chases the window size during live resize)
-      glf.Uniform2f(uvScaleLoc, (float)g.fbW / g.overlay.texWidth(),
-                    (float)g.fbH / g.overlay.texHeight());
-      glBindTexture(GL_TEXTURE_2D, g.overlay.texture());
-      glDrawArrays(GL_TRIANGLES, 0, 3);
-      glDisable(GL_BLEND);
-    }
-
-    if (g.selftest && g.selftestPhase == 4) {
-      writePPM(g.shotPath.c_str(), g.fbW, g.fbH);
-      break;
-    }
-
-    glfwSwapBuffers(g.window);
-
-    // ---- timing / stats ----
-    auto tNow = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(tNow - tPrev).count();
-    tPrev = tNow;
-    g.frameMs = g.frameMs * 0.92 + dt * 1000.0 * 0.08;
-    g.fps = g.fps * 0.92 + (dt > 0 ? 1.0 / dt : 0) * 0.08;
-
-    double paintWin = std::chrono::duration<double>(tNow - tPaintWindow).count();
-    if (paintWin >= 1.0) {
-      g.paintsPerSec = (g.overlay.paintCount() - paintWindowStart) / paintWin;
-      paintWindowStart = g.overlay.paintCount();
-      tPaintWindow = tNow;
-    }
-
-    if (++frame % 15 == 0 && g.overlay.loaded()) {
-      char js[512];
-      std::snprintf(js, sizeof js,
-                    "window.__stats && __stats({fps:%.1f,frameMs:%.2f,"
-                    "cudaMs:%.2f,paints:%.0f,upMs:%.2f,sim:'%dx%d',gpu:'%s'})",
-                    g.fps, g.frameMs, g.simStats.kernelMs, g.paintsPerSec,
-                    g.uploadMsAvg, g.simW, g.simH, simDeviceName());
-      g.overlay.runJS(js);
     }
   }
 
   simShutdown();
   g.overlay.shutdown();
-  glfwDestroyWindow(g.window);
-  glfwTerminate();
+  SDL_GL_DestroyContext(g.glctx);
+  SDL_DestroyWindow(g.window);
+  SDL_Quit();
   return 0;
 }

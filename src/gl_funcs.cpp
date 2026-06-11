@@ -1,18 +1,17 @@
 #include "gl_funcs.h"
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL_video.h>
 
 #include <cstdio>
 
 GLFns glf{};
 
 bool initGLFunctions() {
-#define LOAD(name, type)                                              \
-  glf.name = reinterpret_cast<type>(glfwGetProcAddress("gl" #name)); \
-  if (!glf.name) {                                                    \
-    std::fprintf(stderr, "[gl] missing entry point gl%s\n", #name);   \
-    return false;                                                     \
+#define LOAD(name, type)                                                  \
+  glf.name = reinterpret_cast<type>(SDL_GL_GetProcAddress("gl" #name));   \
+  if (!glf.name) {                                                        \
+    std::fprintf(stderr, "[gl] missing entry point gl%s\n", #name);       \
+    return false;                                                         \
   }
   LOAD(CreateShader, PFNGLCREATESHADERPROC)
   LOAD(ShaderSource, PFNGLSHADERSOURCEPROC)

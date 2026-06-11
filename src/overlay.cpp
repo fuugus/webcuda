@@ -2,8 +2,7 @@
 
 #include "gl_funcs.h"
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL_keycode.h>
 
 #include <atomic>
 #include <chrono>
@@ -496,48 +495,47 @@ uint64_t Overlay::paintCount() const {
 }
 
 // ===========================================================================
-// GLFW -> CEF translation helpers
+// SDL -> CEF translation helpers
 // ===========================================================================
-uint32_t cefModifiersFromGlfw(int glfwMods, bool l, bool m, bool r) {
+uint32_t cefModifiersFromSDL(uint32_t sdlMods, bool l, bool m, bool r) {
   uint32_t f = 0;
-  if (glfwMods & GLFW_MOD_SHIFT) f |= EVENTFLAG_SHIFT_DOWN;
-  if (glfwMods & GLFW_MOD_CONTROL) f |= EVENTFLAG_CONTROL_DOWN;
-  if (glfwMods & GLFW_MOD_ALT) f |= EVENTFLAG_ALT_DOWN;
-  if (glfwMods & GLFW_MOD_CAPS_LOCK) f |= EVENTFLAG_CAPS_LOCK_ON;
+  if (sdlMods & SDL_KMOD_SHIFT) f |= EVENTFLAG_SHIFT_DOWN;
+  if (sdlMods & SDL_KMOD_CTRL) f |= EVENTFLAG_CONTROL_DOWN;
+  if (sdlMods & SDL_KMOD_ALT) f |= EVENTFLAG_ALT_DOWN;
+  if (sdlMods & SDL_KMOD_CAPS) f |= EVENTFLAG_CAPS_LOCK_ON;
   if (l) f |= EVENTFLAG_LEFT_MOUSE_BUTTON;
   if (m) f |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
   if (r) f |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
   return f;
 }
 
-int windowsKeyCodeFromGlfw(int key) {
-  if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) return 'A' + (key - GLFW_KEY_A);
-  if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) return '0' + (key - GLFW_KEY_0);
-  if (key >= GLFW_KEY_F1 && key <= GLFW_KEY_F12)
-    return 0x70 + (key - GLFW_KEY_F1);
+int windowsKeyCodeFromSDL(uint32_t key) {
+  if (key >= SDLK_A && key <= SDLK_Z) return 'A' + (int)(key - SDLK_A);
+  if (key >= SDLK_0 && key <= SDLK_9) return '0' + (int)(key - SDLK_0);
+  if (key >= SDLK_F1 && key <= SDLK_F12) return 0x70 + (int)(key - SDLK_F1);
   switch (key) {
-    case GLFW_KEY_BACKSPACE: return 0x08;
-    case GLFW_KEY_TAB: return 0x09;
-    case GLFW_KEY_ENTER:
-    case GLFW_KEY_KP_ENTER: return 0x0D;
-    case GLFW_KEY_LEFT_SHIFT:
-    case GLFW_KEY_RIGHT_SHIFT: return 0x10;
-    case GLFW_KEY_LEFT_CONTROL:
-    case GLFW_KEY_RIGHT_CONTROL: return 0x11;
-    case GLFW_KEY_LEFT_ALT:
-    case GLFW_KEY_RIGHT_ALT: return 0x12;
-    case GLFW_KEY_ESCAPE: return 0x1B;
-    case GLFW_KEY_SPACE: return 0x20;
-    case GLFW_KEY_PAGE_UP: return 0x21;
-    case GLFW_KEY_PAGE_DOWN: return 0x22;
-    case GLFW_KEY_END: return 0x23;
-    case GLFW_KEY_HOME: return 0x24;
-    case GLFW_KEY_LEFT: return 0x25;
-    case GLFW_KEY_UP: return 0x26;
-    case GLFW_KEY_RIGHT: return 0x27;
-    case GLFW_KEY_DOWN: return 0x28;
-    case GLFW_KEY_INSERT: return 0x2D;
-    case GLFW_KEY_DELETE: return 0x2E;
+    case SDLK_BACKSPACE: return 0x08;
+    case SDLK_TAB: return 0x09;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER: return 0x0D;
+    case SDLK_LSHIFT:
+    case SDLK_RSHIFT: return 0x10;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL: return 0x11;
+    case SDLK_LALT:
+    case SDLK_RALT: return 0x12;
+    case SDLK_ESCAPE: return 0x1B;
+    case SDLK_SPACE: return 0x20;
+    case SDLK_PAGEUP: return 0x21;
+    case SDLK_PAGEDOWN: return 0x22;
+    case SDLK_END: return 0x23;
+    case SDLK_HOME: return 0x24;
+    case SDLK_LEFT: return 0x25;
+    case SDLK_UP: return 0x26;
+    case SDLK_RIGHT: return 0x27;
+    case SDLK_DOWN: return 0x28;
+    case SDLK_INSERT: return 0x2D;
+    case SDLK_DELETE: return 0x2E;
     default: return 0;
   }
 }

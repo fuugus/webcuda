@@ -72,9 +72,9 @@ class Overlay {
   int texW_ = 0, texH_ = 0;
 };
 
-// Translate helpers used by main.cpp
-uint32_t cefModifiersFromGlfw(int glfwMods, bool l, bool m, bool r);
-int windowsKeyCodeFromGlfw(int glfwKey);
+// Translate helpers used by main.cpp (SDL_Keymod / SDL_Keycode as uint32)
+uint32_t cefModifiersFromSDL(uint32_t sdlMods, bool l, bool m, bool r);
+int windowsKeyCodeFromSDL(uint32_t sdlKey);
 
 // Mirrors EVENTFLAG_LEFT_MOUSE_BUTTON (keeps CEF headers out of main.cpp).
 constexpr uint32_t kModLeftMouse = 1u << 4;

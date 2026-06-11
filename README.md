@@ -8,7 +8,7 @@ in-app windows; everything outside them is transparent and belongs to the
 GPU scene.
 
 ```
-┌─ GLFW window ──────────────────────────────────────────┐
+┌─ SDL3 window ──────────────────────────────────────────┐
 │  frame N:                                              │
 │   1. pump CEF + SendExternalBeginFrame()  (UI paints)  │
 │   2. CUDA kernels → GL texture (surface writes, 0copy) │
@@ -37,6 +37,20 @@ GPU scene.
    avoids Chromium's GPU→CPU readback latency; a DOM-only UI rasterizes in
    well under a frame.
 
+## Why interactive resize is artifact-free
+
+The windowing layer is SDL3 (vendored via FetchContent, statically linked)
+specifically because its X11 backend implements the `_NET_WM_SYNC_REQUEST`
+frame-sync handshake: the WM tags each resize step, and SDL acknowledges the
+tag inside `SDL_GL_SwapWindow` — so the compositor waits for our matching
+frame before displaying that step. Mismatch frames (the classic GL resize
+jitter, worst vertically due to GL's bottom-left origin) are impossible by
+protocol. This is the same mechanism Chrome and GTK apps use; GLFW does not
+implement it. On top of that the app renders synchronously inside the resize
+event, drops vsync while a resize is in progress (presents paced at ~2×
+refresh; the sim never fast-forwards), and draws the overlay pixel-exact
+anchored top-left while CEF's relayout catches up.
+
 The built-in self-test measures this end-to-end: it synthetically drags the
 "Simulation" window for 240 frames and counts real CEF paints
 (`./webcuda --selftest` → ~59 paints/s at 60 Hz = a repaint every frame).
@@ -45,7 +59,7 @@ The built-in self-test measures this end-to-end: it synthetically drags the
 
 | path | what |
 |---|---|
-| `src/main.cpp` | GLFW window, render loop, compositing, input routing, self-test |
+| `src/main.cpp` | SDL3 window, render loop, compositing, input routing, self-test |
 | `src/overlay.{h,cpp}` | CEF: off-screen browser, message pump, dirty rects, JS↔C++ bridge |
 | `src/sim.{h,cu}` | CUDA Gray-Scott reaction-diffusion + palettes + GL interop |
 | `src/gl_funcs.{h,cpp}` | tiny GL extension loader (no GLEW/glad dependency) |
@@ -54,8 +68,10 @@ The built-in self-test measures this end-to-end: it synthetically drags the
 
 ## Building (Linux)
 
-Dependencies: CUDA toolkit 13.x, `libglfw3-dev`, `libgl-dev`, `libx11-dev`,
-cmake ≥ 3.26. CEF 148 linux64-minimal extracted to `third_party/cef`:
+Dependencies: CUDA toolkit 13.x, `libgl-dev`, `libx11-dev` (+ the usual X11
+extension headers: xext, xrandr, xcursor, xfixes, xi), cmake ≥ 3.26. SDL3 is
+fetched and built automatically. CEF 148 linux64-minimal extracted to
+`third_party/cef`:
 
 ```sh
 cd third_party
@@ -107,9 +123,11 @@ GL runs on the NVIDIA card (X11/GLX preferred, Wayland fallback handled).
 
 ## Windows notes (design only, untested)
 
-Every component is cross-platform: GLFW, CEF, CUDA-GL interop all work on
+Every component is cross-platform: SDL3, CEF, CUDA-GL interop all work on
 Windows. Porting checklist:
-- replace the `readlink("/proc/self/exe")` exe-dir lookup and drop `XInitThreads`
+- replace the `readlink("/proc/self/exe")` exe-dir lookup and the X11-specific
+  bits (`_NET_WM_MOVERESIZE` → `SDL_HitTest` or WM_NCHITTEST for the frameless
+  chrome; resize sync is handled natively by DWM)
 - CEF on Windows wants `CefMainArgs(hInstance)` and the sandbox disabled the same way
 - keyboard translation already uses Windows VK codes (CEF's cross-platform convention)
 - optional upgrade: CEF `shared_texture_enabled` + `OnAcceleratedPaint` gives a

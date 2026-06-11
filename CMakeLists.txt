@@ -27,8 +27,28 @@ ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(X11 REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET glfw3)
+
+# SDL3, vendored + static: its X11 backend implements the _NET_WM_SYNC_REQUEST
+# frame-sync handshake (acked inside SDL_GL_SwapWindow), which is what makes
+# interactive resize artifact-free. GLFW has no equivalent.
+include(FetchContent)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
+set(SDL_GPU OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+set(SDL_JOYSTICK OFF CACHE BOOL "" FORCE)
+set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
+set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
+set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
+set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(SDL3
+  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+  GIT_TAG release-3.2.16
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(SDL3)
 
 # ---------------- CUDA simulation (separate target: keeps nvcc away from CEF flags) ----------------
 add_library(sim STATIC src/sim.cu)
@@ -49,7 +69,7 @@ target_link_libraries(webcuda PRIVATE
   libcef_lib
   libcef_dll_wrapper
   sim
-  PkgConfig::GLFW
+  SDL3::SDL3-static
   OpenGL::GL
   X11::X11
   CUDA::cudart)
