@@ -1,0 +1,365 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebCUDA overlay</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; background:transparent; overflow:hidden; }
+  body {
+    font: 13px/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
+    color:#dde3ee;
+    user-select:none; -webkit-user-select:none;
+    cursor:default;
+  }
+
+  /* ---------- top bar ---------- */
+  #topbar {
+    position:fixed; left:0; top:0; right:0; height:38px;
+    display:flex; align-items:center; gap:6px; padding:0 12px;
+    background:rgba(14,16,24,.88);
+    border-bottom:1px solid rgba(255,255,255,.08);
+    z-index:5;
+  }
+  #topbar .brand { font-weight:650; letter-spacing:.4px; margin-right:10px; }
+  #topbar .brand b { color:#5b9dff; }
+  #topbar button {
+    background:rgba(255,255,255,.06); color:#cdd6e4;
+    border:1px solid rgba(255,255,255,.10); border-radius:6px;
+    padding:4px 12px; font:inherit; font-size:12px; cursor:pointer;
+  }
+  #topbar button:hover { background:rgba(91,157,255,.18); border-color:rgba(91,157,255,.45); }
+  #topbar .spacer { flex:1; }
+  #topbar .hint { font-size:11px; color:#7c8699; }
+  #topbar .clock { font-variant-numeric:tabular-nums; color:#9fb0c8; margin-left:14px; }
+
+  /* ---------- windows ---------- */
+  .win {
+    position:fixed; left:0; top:0;
+    min-width:240px; min-height:0;
+    background:rgba(17,20,29,.90);
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:10px;
+    box-shadow:0 12px 40px rgba(0,0,0,.45);
+    will-change:transform;
+    display:flex; flex-direction:column;
+    z-index:10;
+  }
+  .win.focused { border-color:rgba(91,157,255,.55); box-shadow:0 14px 48px rgba(0,0,0,.6); }
+  .titlebar {
+    height:32px; flex:0 0 32px; display:flex; align-items:center;
+    padding:0 6px 0 12px; gap:8px;
+    background:linear-gradient(rgba(255,255,255,.05), rgba(255,255,255,.015));
+    border-bottom:1px solid rgba(255,255,255,.07);
+    border-radius:10px 10px 0 0;
+    cursor:grab;
+  }
+  .titlebar:active { cursor:grabbing; }
+  .titlebar .t { flex:1; font-weight:600; font-size:12.5px; color:#c9d3e3; pointer-events:none; }
+  .titlebar button {
+    width:22px; height:22px; border-radius:5px; border:none;
+    background:transparent; color:#8a94a8; font-size:12px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .titlebar button:hover { background:rgba(255,255,255,.10); color:#fff; }
+  .titlebar button.close:hover { background:#c0392b; }
+  .body { padding:12px; overflow:auto; flex:1; }
+  .win.collapsed .body, .win.collapsed .rh { display:none; }
+  .win.collapsed { min-height:0; }
+
+  /* resize handles */
+  .rh { position:absolute; z-index:11; }
+  .rh.n  { top:-4px; left:8px; right:8px; height:8px; cursor:ns-resize; }
+  .rh.s  { bottom:-4px; left:8px; right:8px; height:8px; cursor:ns-resize; }
+  .rh.e  { right:-4px; top:8px; bottom:8px; width:8px; cursor:ew-resize; }
+  .rh.w  { left:-4px; top:8px; bottom:8px; width:8px; cursor:ew-resize; }
+  .rh.ne { right:-4px; top:-4px; width:12px; height:12px; cursor:nesw-resize; }
+  .rh.nw { left:-4px; top:-4px; width:12px; height:12px; cursor:nwse-resize; }
+  .rh.se { right:-4px; bottom:-4px; width:12px; height:12px; cursor:nwse-resize; }
+  .rh.sw { left:-4px; bottom:-4px; width:12px; height:12px; cursor:nesw-resize; }
+
+  /* ---------- controls ---------- */
+  .row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .row label { width:86px; flex:0 0 86px; color:#9aa6ba; font-size:12px; }
+  .row output { width:56px; flex:0 0 56px; text-align:right; font-variant-numeric:tabular-nums; color:#cfe0ff; font-size:12px; }
+  input[type=range] { flex:1; appearance:none; height:4px; border-radius:2px; background:rgba(255,255,255,.14); outline:none; }
+  input[type=range]::-webkit-slider-thumb {
+    appearance:none; width:14px; height:14px; border-radius:50%;
+    background:#5b9dff; border:2px solid #0d1322; cursor:pointer;
+  }
+  .btnrow { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .btnrow button, .palettes button {
+    background:rgba(255,255,255,.06); color:#cdd6e4;
+    border:1px solid rgba(255,255,255,.10); border-radius:6px;
+    padding:5px 10px; font:inherit; font-size:12px; cursor:pointer;
+  }
+  .btnrow button:hover { background:rgba(91,157,255,.18); border-color:rgba(91,157,255,.45); }
+  .btnrow button.active { background:rgba(91,157,255,.3); border-color:#5b9dff; color:#fff; }
+  .palettes { display:flex; gap:6px; }
+  .palettes button { width:42px; height:20px; padding:0; border-radius:4px; }
+  .palettes button.active { outline:2px solid #5b9dff; }
+  .sep { height:1px; background:rgba(255,255,255,.08); margin:10px 0; }
+  .small { font-size:11px; color:#7c8699; }
+
+  /* ---------- perf ---------- */
+  .stats { display:grid; grid-template-columns:auto 1fr; gap:3px 14px; font-variant-numeric:tabular-nums; }
+  .stats dt { color:#9aa6ba; font-size:12px; }
+  .stats dd { text-align:right; color:#d7e3f7; font-size:12px; }
+  #spark { width:100%; height:56px; margin-top:10px; border-radius:6px; background:rgba(255,255,255,.04); }
+  p.about { color:#aab4c6; font-size:12px; user-select:text; -webkit-user-select:text; }
+  p.about + p.about { margin-top:8px; }
+  code { color:#8fc0ff; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <span class="brand">Web<b>CUDA</b></span>
+  <button data-toggle="sim">Simulation</button>
+  <button data-toggle="perf">Performance</button>
+  <button data-toggle="about">About</button>
+  <span class="spacer"></span>
+  <span class="hint">drag background: inject chemistry · wheel: brush size · F11 fullscreen · Esc quit</span>
+  <span class="clock" id="clock"></span>
+</div>
+
+<script>
+'use strict';
+const send = (m, cb) => {
+  if (!window.cefQuery) return;
+  cefQuery({ request: m, onSuccess: r => cb && cb(r),
+             onFailure: (c, e) => console.warn('query failed:', m, c, e) });
+};
+
+/* ---------------- window manager ---------------- */
+let zTop = 20;
+const wins = {};
+
+function makeWindow(id, title, x, y, w, h) {
+  const el = document.createElement('div');
+  el.className = 'win';
+  el.innerHTML = `
+    <div class="titlebar">
+      <span class="t">${title}</span>
+      <button class="collapse" title="collapse">–</button>
+      <button class="close" title="close">✕</button>
+    </div>
+    <div class="body"></div>
+    ${['n','s','e','w','ne','nw','se','sw'].map(d=>`<div class="rh ${d}" data-d="${d}"></div>`).join('')}`;
+  document.body.appendChild(el);
+
+  const st = { el, x, y, w, h, id };
+  wins[id] = st;
+  el.style.width = w + 'px';
+  el.style.height = h + 'px';
+  apply(st);
+
+  const focus = () => {
+    el.style.zIndex = ++zTop;
+    document.querySelectorAll('.win').forEach(n => n.classList.remove('focused'));
+    el.classList.add('focused');
+  };
+  el.addEventListener('pointerdown', focus);
+
+  /* drag (titlebar) */
+  const tb = el.querySelector('.titlebar');
+  tb.addEventListener('pointerdown', ev => {
+    if (ev.target.tagName === 'BUTTON' || ev.button !== 0) return;
+    const sx = ev.clientX - st.x, sy = ev.clientY - st.y;
+    tb.setPointerCapture(ev.pointerId);
+    const move = e => { st.x = e.clientX - sx; st.y = e.clientY - sy; clamp(st); apply(st); };
+    const up = e => { tb.releasePointerCapture(ev.pointerId);
+                      tb.removeEventListener('pointermove', move);
+                      tb.removeEventListener('pointerup', up); };
+    tb.addEventListener('pointermove', move);
+    tb.addEventListener('pointerup', up);
+  });
+
+  /* resize (8 handles) */
+  el.querySelectorAll('.rh').forEach(hd => {
+    hd.addEventListener('pointerdown', ev => {
+      if (ev.button !== 0) return;
+      ev.stopPropagation(); focus();
+      const d = hd.dataset.d;
+      const s = { x: st.x, y: st.y, w: el.offsetWidth, h: el.offsetHeight,
+                  cx: ev.clientX, cy: ev.clientY };
+      hd.setPointerCapture(ev.pointerId);
+      const move = e => {
+        const dx = e.clientX - s.cx, dy = e.clientY - s.cy;
+        let { x, y, w, h } = s;
+        if (d.includes('e')) w = Math.max(240, s.w + dx);
+        if (d.includes('s')) h = Math.max(110, s.h + dy);
+        if (d.includes('w')) { w = Math.max(240, s.w - dx); x = s.x + (s.w - w); }
+        if (d.includes('n')) { h = Math.max(110, s.h - dy); y = s.y + (s.h - h); }
+        st.x = x; st.y = y;
+        el.style.width = w + 'px'; el.style.height = h + 'px';
+        apply(st);
+      };
+      const up = () => { hd.releasePointerCapture(ev.pointerId);
+                         hd.removeEventListener('pointermove', move);
+                         hd.removeEventListener('pointerup', up); };
+      hd.addEventListener('pointermove', move);
+      hd.addEventListener('pointerup', up);
+    });
+  });
+
+  el.querySelector('.collapse').addEventListener('click',
+      () => el.classList.toggle('collapsed'));
+  el.querySelector('.close').addEventListener('click',
+      () => el.style.display = 'none');
+  focus();
+  return el.querySelector('.body');
+}
+
+function apply(st) { st.el.style.transform = `translate3d(${st.x}px,${st.y}px,0)`; }
+function clamp(st) {
+  st.x = Math.min(Math.max(st.x, 60 - st.el.offsetWidth), innerWidth - 60);
+  st.y = Math.min(Math.max(st.y, 38), innerHeight - 24);
+}
+
+document.querySelectorAll('#topbar [data-toggle]').forEach(b => {
+  b.addEventListener('click', () => {
+    const el = wins[b.dataset.toggle].el;
+    const hidden = el.style.display === 'none';
+    el.style.display = hidden ? 'flex' : 'none';
+    if (hidden) el.style.zIndex = ++zTop;
+  });
+});
+
+/* ---------------- simulation window ---------------- */
+const simBody = makeWindow('sim', 'Simulation — Gray-Scott', 40, 70, 330, 330);
+simBody.innerHTML = `
+  <div class="row"><label>Feed F</label><input type="range" id="rF" min="0.010" max="0.110" step="0.0005" value="0.0545"><output id="oF">0.0545</output></div>
+  <div class="row"><label>Kill k</label><input type="range" id="rk" min="0.030" max="0.075" step="0.0005" value="0.0620"><output id="ok">0.0620</output></div>
+  <div class="row"><label>Speed</label><input type="range" id="rs" min="0" max="40" step="1" value="12"><output id="os">12 it/f</output></div>
+  <div class="row"><label>Brush</label><input type="range" id="rb" min="4" max="80" step="1" value="18"><output id="ob">18 px</output></div>
+  <div class="sep"></div>
+  <div class="row"><label>Palette</label><div class="palettes">
+    <button data-p="0" style="background:linear-gradient(90deg,#071226,#1768b8,#f8fff5)"></button>
+    <button data-p="1" style="background:linear-gradient(90deg,#1a0a0a,#d54d0d,#fff9db)"></button>
+    <button data-p="2" style="background:linear-gradient(90deg,#081a0d,#1a8a40,#f7ffe0)"></button>
+    <button data-p="3" style="background:linear-gradient(90deg,#0c0d10,#737780,#f4f6ff)"></button>
+  </div></div>
+  <div class="row"><label>Preset</label><div class="btnrow" id="presets">
+    <button data-f="0.0545" data-k="0.0620">Coral</button>
+    <button data-f="0.0367" data-k="0.0649">Mitosis</button>
+    <button data-f="0.0780" data-k="0.0610">Worms</button>
+    <button data-f="0.0300" data-k="0.0600">Solitons</button>
+    <button data-f="0.0260" data-k="0.0510">Chaos</button>
+  </div></div>
+  <div class="sep"></div>
+  <div class="btnrow">
+    <button id="bPause">Pause</button>
+    <button id="bReset">Reset</button>
+  </div>`;
+
+const fmt = (v, d) => Number(v).toFixed(d);
+function bindSlider(rid, oid, param, label, dec) {
+  const r = document.getElementById(rid), o = document.getElementById(oid);
+  r.addEventListener('input', () => {
+    o.textContent = label ? `${fmt(r.value, dec)} ${label}` : fmt(r.value, dec);
+    send(`set ${param} ${r.value}`);
+  });
+  return r;
+}
+const rF = bindSlider('rF', 'oF', 'F', '', 4);
+const rk = bindSlider('rk', 'ok', 'k', '', 4);
+bindSlider('rs', 'os', 'steps', 'it/f', 0);
+bindSlider('rb', 'ob', 'brush', 'px', 0);
+
+document.querySelectorAll('.palettes button').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.palettes button').forEach(n => n.classList.remove('active'));
+    b.classList.add('active');
+    send(`set palette ${b.dataset.p}`);
+  });
+});
+document.querySelector('.palettes button').classList.add('active');
+
+document.querySelectorAll('#presets button').forEach(b => {
+  b.addEventListener('click', () => {
+    rF.value = b.dataset.f; rk.value = b.dataset.k;
+    rF.dispatchEvent(new Event('input'));
+    rk.dispatchEvent(new Event('input'));
+    document.querySelectorAll('#presets button').forEach(n => n.classList.remove('active'));
+    b.classList.add('active');
+  });
+});
+
+let paused = false;
+document.getElementById('bPause').addEventListener('click', e => {
+  paused = !paused;
+  e.target.textContent = paused ? 'Resume' : 'Pause';
+  e.target.classList.toggle('active', paused);
+  send(paused ? 'cmd pause' : 'cmd resume');
+});
+document.getElementById('bReset').addEventListener('click', () => send('cmd reset'));
+
+/* ---------------- performance window ---------------- */
+const perfBody = makeWindow('perf', 'Performance', innerWidth - 360, 70, 320, 300);
+perfBody.innerHTML = `
+  <dl class="stats">
+    <dt>Render</dt><dd id="sFps">—</dd>
+    <dt>Frame time</dt><dd id="sFrame">—</dd>
+    <dt>CUDA kernels</dt><dd id="sCuda">—</dd>
+    <dt>Overlay paints</dt><dd id="sPaints">—</dd>
+    <dt>Overlay upload</dt><dd id="sUp">—</dd>
+    <dt>Sim grid</dt><dd id="sSim">—</dd>
+    <dt>GPU</dt><dd id="sGpu">—</dd>
+  </dl>
+  <canvas id="spark" width="296" height="56"></canvas>
+  <div class="small" style="margin-top:6px">fps history (60 s)</div>`;
+
+const hist = [];
+window.__stats = o => {
+  const set = (id, v) => document.getElementById(id).textContent = v;
+  set('sFps', o.fps.toFixed(1) + ' fps');
+  set('sFrame', o.frameMs.toFixed(2) + ' ms');
+  set('sCuda', o.cudaMs.toFixed(2) + ' ms');
+  set('sPaints', o.paints.toFixed(0) + ' /s');
+  set('sUp', o.upMs.toFixed(2) + ' ms');
+  set('sSim', o.sim);
+  set('sGpu', o.gpu);
+  hist.push(o.fps);
+  if (hist.length > 240) hist.shift();
+  const cv = document.getElementById('spark'), ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const max = Math.max(80, ...hist);
+  ctx.beginPath();
+  hist.forEach((f, i) => {
+    const x = i / 239 * cv.width, y = cv.height - f / max * (cv.height - 6) - 3;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.strokeStyle = '#5b9dff'; ctx.lineWidth = 1.5; ctx.stroke();
+};
+
+/* ---------------- about window ---------------- */
+const aboutBody = makeWindow('about', 'About', innerWidth / 2 - 210, innerHeight - 280, 420, 210);
+aboutBody.innerHTML = `
+  <p class="about"><b>WebCUDA</b> — a unified graphics pipeline: a CUDA
+  reaction-diffusion simulation writes directly into an OpenGL texture
+  (<code>cudaGraphicsGLRegisterImage</code>, zero copies), and this UI is a
+  Chromium (CEF) layer rendered off-screen and composited over it in the same
+  swapchain.</p>
+  <p class="about">The overlay paints in lockstep with the render loop
+  (external begin frames) and only dirty rectangles are uploaded, so dragging
+  these windows stays at full refresh rate. Input is routed by the overlay's
+  alpha channel: clicks on transparent areas reach the simulation.</p>
+  <p class="about" id="aboutGpu"></p>`;
+wins.about.el.style.display = 'none';
+send('info', r => {
+  const [gpu, sim] = r.split('|');
+  document.getElementById('aboutGpu').innerHTML = `GPU: <code>${gpu}</code> · sim grid <code>${sim}</code>`;
+});
+
+/* ---------------- clock + ready handshake ---------------- */
+const tick = () => document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString();
+tick(); setInterval(tick, 1000);
+
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  const r = wins.sim.el.querySelector('.titlebar').getBoundingClientRect();
+  send(`ready ${Math.round(r.left + r.width / 2)} ${Math.round(r.top + r.height / 2)}`);
+}));
+</script>
+</body>
+</html>
