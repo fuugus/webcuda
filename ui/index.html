@@ -33,6 +33,17 @@
   #topbar .hint { font-size:11px; color:#7c8699; }
   #topbar .clock { font-variant-numeric:tabular-nums; color:#9fb0c8; margin-left:14px; }
 
+  /* window caption buttons (frameless mode) */
+  #wctl { display:flex; align-self:stretch; margin:0 -12px 0 8px; }
+  #wctl button {
+    width:46px; height:100%; border:none; border-radius:0;
+    background:transparent; color:#aab4c6; font-size:13px; cursor:default;
+    display:flex; align-items:center; justify-content:center; padding:0;
+  }
+  #wctl button:hover { background:rgba(255,255,255,.10); color:#fff; }
+  #wctl button.close:hover { background:#e81123; }
+  #wctl svg { width:11px; height:11px; }
+
   /* ---------- windows ---------- */
   .win {
     position:fixed; left:0; top:0;
@@ -122,6 +133,20 @@
   <span class="clock" id="clock"></span>
 </div>
 
+<template id="wctl-tpl">
+  <div id="wctl">
+    <button class="min" title="minimize">
+      <svg viewBox="0 0 11 11"><path d="M0 5.5h11" stroke="currentColor" fill="none"/></svg>
+    </button>
+    <button class="max" title="maximize">
+      <svg viewBox="0 0 11 11"><rect class="i-max" x="1" y="1" width="9" height="9" stroke="currentColor" fill="none"/></svg>
+    </button>
+    <button class="close" title="close">
+      <svg viewBox="0 0 11 11"><path d="M1 1l9 9M10 1l-9 9" stroke="currentColor" fill="none"/></svg>
+    </button>
+  </div>
+</template>
+
 <script>
 'use strict';
 const send = (m, cb) => {
@@ -129,6 +154,49 @@ const send = (m, cb) => {
   cefQuery({ request: m, onSuccess: r => cb && cb(r),
              onFailure: (c, e) => console.warn('query failed:', m, c, e) });
 };
+
+/* ---------------- frameless window chrome ---------------- */
+const frameless = new URLSearchParams(location.search).get('frameless') === '1';
+if (frameless) {
+  const topbar = document.getElementById('topbar');
+  topbar.appendChild(document.getElementById('wctl-tpl').content.cloneNode(true));
+  topbar.querySelector('#wctl .min').addEventListener('click', () => send('win minimize'));
+  topbar.querySelector('#wctl .max').addEventListener('click', () => send('win maximize'));
+  topbar.querySelector('#wctl .close').addEventListener('click', () => send('win close'));
+
+  // empty header bar space moves the OS window (the WM takes over natively)
+  topbar.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    send('win drag');
+  });
+  topbar.addEventListener('dblclick', e => {
+    if (e.target.closest('button')) return;
+    send('win maximize');
+  });
+
+  window.__winState = o => {
+    const r = topbar.querySelector('#wctl .i-max');
+    const b = topbar.querySelector('#wctl .max');
+    if (o.maximized) {  // restore icon: two offset squares
+      r.setAttribute('x', 1); r.setAttribute('y', 3);
+      r.setAttribute('width', 7); r.setAttribute('height', 7);
+      if (!b.querySelector('.i-max2')) {
+        const r2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        r2.setAttribute('class', 'i-max2');
+        r2.setAttribute('d', 'M3 3V1h7v7h-2');
+        r2.setAttribute('stroke', 'currentColor');
+        r2.setAttribute('fill', 'none');
+        b.querySelector('svg').appendChild(r2);
+      }
+      b.title = 'restore';
+    } else {
+      r.setAttribute('x', 1); r.setAttribute('y', 1);
+      r.setAttribute('width', 9); r.setAttribute('height', 9);
+      b.querySelector('.i-max2')?.remove();
+      b.title = 'maximize';
+    }
+  };
+}
 
 /* ---------------- window manager ---------------- */
 let zTop = 20;

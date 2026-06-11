@@ -18,6 +18,8 @@
 #include "gl_funcs.h"
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_X11
+#include <GLFW/glfw3native.h>
 
 #include "overlay.h"
 #include "sim.h"
@@ -54,6 +56,9 @@ struct AppState {
 
   // windowed <-> fullscreen
   int savedX = 0, savedY = 0, savedW = 0, savedH = 0;
+
+  // frameless mode (default): web header bar owns move/minimize/maximize/close
+  bool frameless = true;
 
   // stats
   double fps = 0, frameMs = 0;
@@ -98,6 +103,69 @@ void brushAt(double x, double y) {
 }
 
 // ---------------------------------------------------------------------------
+// Frameless window: move/resize via the WM protocol (_NET_WM_MOVERESIZE).
+// The window manager performs the operation natively, so dragging by our web
+// header bar behaves exactly like a real titlebar (snapping included).
+// ---------------------------------------------------------------------------
+enum {  // _NET_WM_MOVERESIZE directions
+  kWmSizeTopLeft = 0, kWmSizeTop = 1, kWmSizeTopRight = 2, kWmSizeRight = 3,
+  kWmSizeBottomRight = 4, kWmSizeBottom = 5, kWmSizeBottomLeft = 6,
+  kWmSizeLeft = 7, kWmMove = 8,
+};
+
+bool canMoveResize() {
+  return g.frameless && glfwGetPlatform() == GLFW_PLATFORM_X11 &&
+         !glfwGetWindowMonitor(g.window);
+}
+
+// Direction for the resize border under the cursor, or -1.
+int edgeDir(double x, double y) {
+  if (!canMoveResize() || glfwGetWindowAttrib(g.window, GLFW_MAXIMIZED))
+    return -1;
+  const int B = 6;
+  bool l = x < B, r = x > g.fbW - B, t = y < B, b = y > g.fbH - B;
+  if (t && l) return kWmSizeTopLeft;
+  if (t && r) return kWmSizeTopRight;
+  if (b && l) return kWmSizeBottomLeft;
+  if (b && r) return kWmSizeBottomRight;
+  if (t) return kWmSizeTop;
+  if (b) return kWmSizeBottom;
+  if (l) return kWmSizeLeft;
+  if (r) return kWmSizeRight;
+  return -1;
+}
+
+void startWmMoveResize(int dir) {
+  if (!canMoveResize()) return;
+
+  // The WM takes over the pointer: GLFW will never see the button release.
+  // Settle our own state and the web layer's first.
+  if (g.btn[0]) g.overlay.mouseButton((int)g.mouseX, (int)g.mouseY, 0, false, 1, 0);
+  g.btn[0] = g.btn[1] = g.btn[2] = false;
+  g.webCaptured = g.sceneCaptured = false;
+
+  Display* dpy = glfwGetX11Display();
+  ::Window win = glfwGetX11Window(g.window);
+  int wx = 0, wy = 0;
+  glfwGetWindowPos(g.window, &wx, &wy);
+
+  XUngrabPointer(dpy, CurrentTime);  // release the implicit press grab
+  XEvent ev{};
+  ev.xclient.type = ClientMessage;
+  ev.xclient.window = win;
+  ev.xclient.message_type = XInternAtom(dpy, "_NET_WM_MOVERESIZE", False);
+  ev.xclient.format = 32;
+  ev.xclient.data.l[0] = wx + (long)g.mouseX;
+  ev.xclient.data.l[1] = wy + (long)g.mouseY;
+  ev.xclient.data.l[2] = dir;
+  ev.xclient.data.l[3] = Button1;
+  ev.xclient.data.l[4] = 1;  // source: normal application
+  XSendEvent(dpy, DefaultRootWindow(dpy), False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+  XFlush(dpy);
+}
+
+// ---------------------------------------------------------------------------
 // GLFW callbacks
 // ---------------------------------------------------------------------------
 void onCursorPos(GLFWwindow*, double x, double y) {
@@ -107,11 +175,21 @@ void onCursorPos(GLFWwindow*, double x, double y) {
     g.overlay.mouseMove((int)x, (int)y, mods());
   if (g.sceneCaptured && g.btn[0]) brushAt(x, y);
 
-  // cursor shape: web cursor over UI, crosshair over the simulation
-  GLFWcursor* want =
-      (g.webCaptured || (!g.sceneCaptured && g.overlay.uiAt((int)x, (int)y)))
-          ? g.webCursor
-          : g.cursors[2];  // crosshair
+  // cursor shape: resize arrows on frameless borders, web cursor over UI,
+  // crosshair over the simulation
+  GLFWcursor* want;
+  int dir = (g.webCaptured || g.sceneCaptured) ? -1 : edgeDir(x, y);
+  switch (dir) {
+    case kWmSizeTop: case kWmSizeBottom: want = g.cursors[5]; break;
+    case kWmSizeLeft: case kWmSizeRight: want = g.cursors[4]; break;
+    case kWmSizeTopLeft: case kWmSizeBottomRight: want = g.cursors[6]; break;
+    case kWmSizeTopRight: case kWmSizeBottomLeft: want = g.cursors[7]; break;
+    default:
+      want = (g.webCaptured ||
+              (!g.sceneCaptured && g.overlay.uiAt((int)x, (int)y)))
+                 ? g.webCursor
+                 : g.cursors[2];  // crosshair
+  }
   if (want != g.current) {
     g.current = want;
     glfwSetCursor(g.window, want);
@@ -125,6 +203,16 @@ void onMouseButton(GLFWwindow*, int button, int action, int m) {
   g.btn[button] = down;
 
   if (down) {
+    // frameless resize borders take priority over everything
+    if (button == 0) {
+      int dir = edgeDir(g.mouseX, g.mouseY);
+      if (dir >= 0) {
+        g.btn[0] = false;
+        startWmMoveResize(dir);
+        return;
+      }
+    }
+
     // double-click detection (text selection etc.)
     double t = glfwGetTime();
     if (t - g.lastClickTime < 0.4 && std::abs(g.mouseX - g.lastClickX) < 4 &&
@@ -247,6 +335,17 @@ bool onQuery(const std::string& req, std::string& resp) {
     resp = "ok";
     return true;
   }
+  if (req == "win drag") { startWmMoveResize(kWmMove); resp = "ok"; return true; }
+  if (req == "win minimize") { glfwIconifyWindow(g.window); resp = "ok"; return true; }
+  if (req == "win maximize") {
+    if (glfwGetWindowAttrib(g.window, GLFW_MAXIMIZED))
+      glfwRestoreWindow(g.window);
+    else
+      glfwMaximizeWindow(g.window);
+    resp = "ok";
+    return true;
+  }
+  if (req == "win close") { g.shouldQuit = true; resp = "ok"; return true; }
   if (req == "cmd pause") { g.params.paused = true; resp = "ok"; return true; }
   if (req == "cmd resume") { g.params.paused = false; resp = "ok"; return true; }
   if (req == "cmd reset") { simReset(); resp = "ok"; return true; }
@@ -322,6 +421,7 @@ int main(int argc, char** argv) {
   bool extBeginFrame = true;
   for (int i = 1; i < argc; i++) {
     if (!std::strcmp(argv[i], "--selftest")) g.selftest = true;
+    else if (!std::strcmp(argv[i], "--native")) g.frameless = false;
     else if (!std::strcmp(argv[i], "--no-ext-bf")) extBeginFrame = false;
     else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) g.shotPath = argv[++i];
     else if (!std::strcmp(argv[i], "--size") && i + 1 < argc)
@@ -340,9 +440,17 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Frameless mode needs the X11 WM protocol for move/resize; on any other
+  // platform fall back to native decorations.
+  if (g.frameless && glfwGetPlatform() != GLFW_PLATFORM_X11) {
+    std::fprintf(stderr, "[glfw] not on X11 — using native decorations\n");
+    g.frameless = false;
+  }
+
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  glfwWindowHint(GLFW_DECORATED, g.frameless ? GLFW_FALSE : GLFW_TRUE);
   const char* title = "WebCUDA — CUDA × OpenGL × Web UI";
   g.window = glfwCreateWindow(winW, winH, title, nullptr, nullptr);
   if (!g.window && glfwGetPlatform() == GLFW_PLATFORM_X11) {
@@ -350,6 +458,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[glfw] X11/GLX context failed, retrying Wayland\n");
     glfwTerminate();
     glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+    g.frameless = false;  // no WM move/resize protocol off X11
     if (glfwInit()) {
       glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
       glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -361,6 +470,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "window creation failed\n");
     return 1;
   }
+  glfwSetWindowSizeLimits(g.window, 720, 420, GLFW_DONT_CARE, GLFW_DONT_CARE);
   glfwMakeContextCurrent(g.window);
   glfwSwapInterval(1);
   if (!initGLFunctions()) return 1;
@@ -409,7 +519,8 @@ int main(int argc, char** argv) {
   cfg.frameRate = hz;
   cfg.externalBeginFrame = extBeginFrame;
   std::string dir = exeDir();
-  cfg.url = "file://" + dir + "/ui/index.html";
+  cfg.url = "file://" + dir + "/ui/index.html" +
+            (g.frameless ? "?frameless=1" : "");
   cfg.cachePath = dir + "/cef_cache";
   cfg.resourceDir = dir;
   cfg.localesDir = dir + "/locales";
@@ -424,6 +535,10 @@ int main(int argc, char** argv) {
   glfwSetCharCallback(g.window, onChar);
   glfwSetFramebufferSizeCallback(g.window, onFramebufferSize);
   glfwSetWindowFocusCallback(g.window, onWindowFocus);
+  glfwSetWindowMaximizeCallback(g.window, [](GLFWwindow*, int maximized) {
+    g.overlay.runJS(maximized ? "__winState && __winState({maximized:true})"
+                              : "__winState && __winState({maximized:false})");
+  });
 
   auto tPrev = std::chrono::steady_clock::now();
   auto tPaintWindow = tPrev;

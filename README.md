@@ -74,6 +74,16 @@ cmake --build build -j
 (The two `-D`s work around Ubuntu shipping an older `/usr/bin/nvcc` and
 CMake 3.31 probing the removed `sm_52`.)
 
+## Window chrome
+
+By default the app runs **frameless** with its own web-rendered header bar:
+minimize / maximize / close buttons, drag the empty bar space to move the OS
+window, double-click to maximize, and pull any window edge to resize. Move
+and resize are delegated to the window manager via `_NET_WM_MOVERESIZE`, so
+they are exactly as smooth as a native titlebar and keep WM snapping.
+`--native` starts with normal OS decorations instead. (Frameless mode
+requires X11; on other platforms it falls back to `--native` automatically.)
+
 ## Controls
 
 - **drag/resize** the UI windows by titlebar / edges, like any desktop app
@@ -82,7 +92,8 @@ CMake 3.31 probing the removed `sm_52`.)
 - **F11** fullscreen toggle, **Esc** quits (when a UI window isn't focused)
 - top bar buttons reopen closed windows
 
-Flags: `--selftest` (automated drag-smoothness measurement + screenshot),
+Flags: `--native` (OS window decorations instead of the web header bar),
+`--selftest` (automated drag-smoothness measurement + screenshot),
 `--shot file.ppm`, `--size WxH`, `--no-ext-bf` (compare against the old
 free-running paint mode).
 
