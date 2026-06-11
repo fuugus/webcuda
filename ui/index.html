@@ -45,13 +45,40 @@
   }
   #topbar .brand { font-weight:650; letter-spacing:.4px; margin-right:10px; }
   #topbar .brand b { color:var(--ui-accent); }
-  #topbar button {
-    background:rgba(255,255,255,.06); color:#cdd6e4;
-    border:1px solid rgba(255,255,255,.10); border-radius:6px;
-    padding:4px 12px; font:inherit; font-size:12px; cursor:pointer;
-  }
-  #topbar button:hover { background:rgba(91,157,255,.18); border-color:rgba(91,157,255,.45); }
   #topbar .spacer { flex:1; }
+
+  /* ---------- menubar + menus ---------- */
+  #menubar {
+    display:flex; align-items:stretch; align-self:stretch;
+    position:relative; z-index:1001; /* stays clickable above the catcher */
+  }
+  .mb-item {
+    display:flex; align-items:center; padding:0 11px; margin:5px 1px;
+    font-size:12.5px; color:#cdd6e4; border-radius:5px; cursor:default;
+  }
+  .mb-item:hover, .mb-item.active { background:rgba(255,255,255,.09); }
+  .menu {
+    position:fixed; min-width:230px; padding:4px;
+    background:rgba(24,28,38,.97);
+    border:1px solid var(--ui-border); border-radius:6px;
+    box-shadow:0 8px 28px rgba(0,0,0,.5);
+    z-index:1002;
+  }
+  .menu .mi {
+    position:relative; display:flex; align-items:center;
+    padding:5px 26px 5px 28px; border-radius:4px;
+    font-size:12.5px; color:#d6dde9; white-space:nowrap;
+  }
+  .menu .mi.focus { background:rgba(91,157,255,.22); }
+  .menu .mi.disabled { color:#566071; }
+  .menu .mi .lbl { flex:1; padding-right:28px; }
+  .menu .mi .sc { color:var(--ui-text-faint); font-size:11px; }
+  .menu .mi.disabled .sc { color:#49505e; }
+  .menu .mi .chk { position:absolute; left:9px; display:flex; }
+  .menu .mi .sub { position:absolute; right:9px; display:flex; }
+  .menu .mi svg { width:10px; height:10px; }
+  .menu .sep { height:1px; margin:4px 10px; background:rgba(255,255,255,.08); }
+  #menu-catcher { position:fixed; inset:0; z-index:1000; background:transparent; }
   #topbar .hint { font-size:11px; color:#7c8699; }
   #topbar .clock { font-variant-numeric:tabular-nums; color:#9fb0c8; margin-left:14px; }
 
@@ -156,9 +183,11 @@
 <body>
 <div id="topbar">
   <span class="brand">Web<b>CUDA</b></span>
-  <button data-toggle="sim">Simulation</button>
-  <button data-toggle="perf">Performance</button>
-  <button data-toggle="about">About</button>
+  <div id="menubar">
+    <div class="mb-item" data-menu="Simulation">Simulation</div>
+    <div class="mb-item" data-menu="View">View</div>
+    <div class="mb-item" data-menu="Help">Help</div>
+  </div>
   <span class="spacer"></span>
   <span class="hint">drag background: inject chemistry · wheel: brush size · F11 fullscreen · Esc quit</span>
   <span class="clock" id="clock"></span>
@@ -203,11 +232,11 @@ if (frameless) {
 
   // empty header bar space moves the OS window (the WM takes over natively)
   topbar.addEventListener('pointerdown', e => {
-    if (e.button !== 0 || e.target.closest('button')) return;
+    if (e.button !== 0 || e.target.closest('button, #menubar')) return;
     send('win drag');
   });
   topbar.addEventListener('dblclick', e => {
-    if (e.target.closest('button')) return;
+    if (e.target.closest('button, #menubar')) return;
     send('win maximize');
   });
 
@@ -332,6 +361,7 @@ function makeWindow(id, title, x, y, w, h, anchors = '') {
     collapseBtn.title = c ? 'expand' : 'collapse';
     updateAnchorDists(st);
   };
+  st.toggleCollapse = toggleCollapse;
   collapseBtn.addEventListener('click', toggleCollapse);
   tb.addEventListener('dblclick', e => {
     if (!e.target.closest('button')) toggleCollapse();
@@ -364,17 +394,45 @@ window.addEventListener('resize', () => {
   }
 });
 
-document.querySelectorAll('#topbar [data-toggle]').forEach(b => {
-  b.addEventListener('click', () => {
-    const el = wins[b.dataset.toggle].el;
-    const hidden = el.style.display === 'none';
-    el.style.display = hidden ? 'flex' : 'none';
-    if (hidden) el.style.zIndex = ++zTop;
-  });
+/* ---------------- panel helpers (used by menus) ---------------- */
+const DEFAULT_LAYOUT = () => ({
+  sim:   { x: 40, y: 70, w: 330, h: 330 },
+  perf:  { x: innerWidth - 360, y: 70, w: 320, h: 300 },
+  about: { x: innerWidth / 2 - 210, y: innerHeight - 280, w: 420, h: 210 },
 });
+const visible = id => wins[id] && wins[id].el.style.display !== 'none';
+function showWin(id) {
+  wins[id].el.style.display = 'flex';
+  wins[id].el.style.zIndex = ++zTop;
+}
+function toggleWin(id) {
+  visible(id) ? wins[id].el.style.display = 'none' : showWin(id);
+}
+function collapseAll() {
+  for (const st of Object.values(wins))
+    if (visible(st.id) && !st.el.classList.contains('collapsed'))
+      st.toggleCollapse();
+}
+function resetLayout() {
+  const L = DEFAULT_LAYOUT();
+  for (const [id, d] of Object.entries(L)) {
+    const st = wins[id];
+    if (!st) continue;
+    st.el.style.display = 'flex';
+    st.el.classList.remove('collapsed');
+    st.savedH = null;
+    st.x = d.x; st.y = d.y;
+    st.el.style.width = d.w + 'px';
+    st.el.style.height = d.h + 'px';
+    apply(st);
+    updateAnchorDists(st);
+  }
+}
 
 /* ---------------- simulation window ---------------- */
-const simBody = makeWindow('sim', 'Simulation — Gray-Scott', 40, 70, 330, 330);
+const L0 = DEFAULT_LAYOUT();
+const simBody = makeWindow('sim', 'Simulation — Gray-Scott',
+                           L0.sim.x, L0.sim.y, L0.sim.w, L0.sim.h);
 simBody.innerHTML = `
   <div class="row"><label>Feed F</label><input type="range" id="rF" min="0.010" max="0.110" step="0.0005" value="0.0545"><output id="oF">0.0545</output></div>
   <div class="row"><label>Kill k</label><input type="range" id="rk" min="0.030" max="0.075" step="0.0005" value="0.0620"><output id="ok">0.0620</output></div>
@@ -434,16 +492,25 @@ document.querySelectorAll('#presets button').forEach(b => {
 });
 
 let paused = false;
-document.getElementById('bPause').addEventListener('click', e => {
-  paused = !paused;
-  e.target.textContent = paused ? 'Resume' : 'Pause';
-  e.target.classList.toggle('active', paused);
+function setPaused(p) {
+  paused = p;
+  const b = document.getElementById('bPause');
+  b.textContent = paused ? 'Resume' : 'Pause';
+  b.classList.toggle('active', paused);
   send(paused ? 'cmd pause' : 'cmd resume');
-});
+}
+window.__setPaused = p => { if (p !== paused) setPaused(p); };  // native sync
+document.getElementById('bPause').addEventListener('click', () => setPaused(!paused));
 document.getElementById('bReset').addEventListener('click', () => send('cmd reset'));
+function setRange(id, v) {
+  const r = document.getElementById(id);
+  r.value = v;
+  r.dispatchEvent(new Event('input'));
+}
 
 /* ---------------- performance window ---------------- */
-const perfBody = makeWindow('perf', 'Performance', innerWidth - 360, 70, 320, 300, 'r');
+const perfBody = makeWindow('perf', 'Performance',
+                            L0.perf.x, L0.perf.y, L0.perf.w, L0.perf.h, 'r');
 perfBody.innerHTML = `
   <dl class="stats">
     <dt>Render</dt><dd id="sFps">—</dd>
@@ -481,7 +548,8 @@ window.__stats = o => {
 };
 
 /* ---------------- about window ---------------- */
-const aboutBody = makeWindow('about', 'About', innerWidth / 2 - 210, innerHeight - 280, 420, 210, 'b');
+const aboutBody = makeWindow('about', 'About',
+                             L0.about.x, L0.about.y, L0.about.w, L0.about.h, 'b');
 aboutBody.innerHTML = `
   <p class="about"><b>WebCUDA</b> — a unified graphics pipeline: a CUDA
   reaction-diffusion simulation writes directly into an OpenGL texture
@@ -496,6 +564,237 @@ aboutBody.innerHTML = `
 send('info', r => {
   const [gpu, sim] = r.split('|');
   document.getElementById('aboutGpu').innerHTML = `GPU: <code>${gpu}</code> · sim grid <code>${sim}</code>`;
+});
+
+/* ---------------- menu kit: menubar, context menus, submenus ----------------
+   Item spec: {label, shortcut?, disabled?, checked?, action?, children?} or
+   {sep:true}. While any menu is open, a transparent catcher closes on
+   click-away and the native side routes all input to the web layer. */
+const CHK = '<svg viewBox="0 0 10 10"><path d="M1.5 5.2l2.4 2.4 4.6-5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const SUB = '<svg viewBox="0 0 10 10"><path d="M3.4 2l3.2 3-3.2 3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+const menuStack = [];  // {el, items:[{el,spec}], focus}
+let menuCatcher = null, menubarActive = null;
+
+function closeMenusFrom(depth) {
+  while (menuStack.length > depth) menuStack.pop().el.remove();
+}
+function closeMenus() {
+  closeMenusFrom(0);
+  if (menuCatcher) { menuCatcher.remove(); menuCatcher = null; }
+  if (menubarActive) { menubarActive.classList.remove('active'); menubarActive = null; }
+  send('ui modal 0');
+}
+function setMenuFocus(level, idx) {
+  const lv = menuStack[level];
+  if (!lv) return;
+  lv.items.forEach((it, i) =>
+      it.el.classList.toggle('focus', i === idx && !it.spec.disabled));
+  lv.focus = idx;
+}
+function focusFirst(level) {
+  const lv = menuStack[level];
+  const i = lv.items.findIndex(it => !it.spec.disabled);
+  if (i >= 0) setMenuFocus(level, i);
+}
+function openSubmenu(level, idx) {
+  const it = menuStack[level].items[idx];
+  closeMenusFrom(level + 1);
+  const r = it.el.getBoundingClientRect();
+  openMenuLevel(it.spec.children, r.right - 2, r.top - 5);
+}
+
+function openMenuLevel(spec, x, y) {
+  const m = document.createElement('div');
+  m.className = 'menu';
+  const level = menuStack.length;
+  const items = [];
+  for (const it of spec) {
+    if (it.sep) {
+      const s = document.createElement('div');
+      s.className = 'sep';
+      m.appendChild(s);
+      continue;
+    }
+    const el = document.createElement('div');
+    el.className = 'mi' + (it.disabled ? ' disabled' : '');
+    el.innerHTML =
+        (it.checked ? `<span class="chk">${CHK}</span>` : '') +
+        `<span class="lbl">${it.label}</span>` +
+        (it.children ? `<span class="sub">${SUB}</span>`
+                     : it.shortcut ? `<span class="sc">${it.shortcut}</span>` : '');
+    const idx = items.length;
+    if (!it.disabled) {
+      el.addEventListener('pointerenter', () => {
+        setMenuFocus(level, idx);
+        if (it.children) openSubmenu(level, idx);
+        else closeMenusFrom(level + 1);
+      });
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        if (it.children) { openSubmenu(level, idx); return; }
+        closeMenus();
+        it.action && it.action();
+      });
+    } else {
+      el.addEventListener('pointerenter', () => {
+        setMenuFocus(level, -1);
+        closeMenusFrom(level + 1);
+      });
+    }
+    items.push({ el, spec: it });
+    m.appendChild(el);
+  }
+  document.body.appendChild(m);
+  x = Math.min(Math.max(4, x), innerWidth - m.offsetWidth - 4);
+  y = Math.min(Math.max(4, y), innerHeight - m.offsetHeight - 4);
+  m.style.left = x + 'px';
+  m.style.top = y + 'px';
+  menuStack.push({ el: m, items, focus: -1 });
+}
+
+function openRootMenu(spec, x, y) {
+  closeMenusFrom(0);
+  if (!menuCatcher) {
+    menuCatcher = document.createElement('div');
+    menuCatcher.id = 'menu-catcher';
+    menuCatcher.addEventListener('pointerdown', () => closeMenus());
+    menuCatcher.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      closeMenus();
+      openContextMenu(e.clientX, e.clientY);
+    });
+    document.body.appendChild(menuCatcher);
+    send('ui modal 1');  // native: route all input to the web layer
+  }
+  openMenuLevel(spec, x, y);
+}
+
+/* keyboard navigation (VS Code-style) */
+document.addEventListener('keydown', e => {
+  if (!menuStack.length) return;
+  const top = menuStack.length - 1;
+  const lv = menuStack[top];
+  const move = dir => {
+    let i = lv.focus;
+    for (let k = 0; k < lv.items.length; k++) {
+      i = (i + dir + lv.items.length) % lv.items.length;
+      if (!lv.items[i].spec.disabled) break;
+    }
+    setMenuFocus(top, i);
+  };
+  switch (e.key) {
+    case 'Escape': closeMenus(); break;
+    case 'ArrowDown': move(1); break;
+    case 'ArrowUp': move(-1); break;
+    case 'ArrowRight': {
+      const it = lv.items[lv.focus];
+      if (it && it.spec.children) { openSubmenu(top, lv.focus); focusFirst(top + 1); }
+      break;
+    }
+    case 'ArrowLeft':
+      if (menuStack.length > 1) closeMenusFrom(menuStack.length - 1);
+      break;
+    case 'Enter': {
+      const it = lv.items[lv.focus];
+      if (!it || it.spec.disabled) break;
+      if (it.spec.children) { openSubmenu(top, lv.focus); focusFirst(top + 1); }
+      else { closeMenus(); it.spec.action && it.spec.action(); }
+      break;
+    }
+    default: return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
+/* ---------------- menu definitions ---------------- */
+const presetItems = () =>
+    [...document.querySelectorAll('#presets button')].map(b => ({
+      label: b.textContent, checked: b.classList.contains('active'),
+      action: () => b.click(),
+    }));
+const paletteItems = () =>
+    [...document.querySelectorAll('.palettes button')].map((b, i) => ({
+      label: ['Abyss', 'Ember', 'Bio', 'Mono'][i],
+      checked: b.classList.contains('active'),
+      action: () => b.click(),
+    }));
+
+const MENUS = {
+  Simulation: () => [
+    { label: paused ? 'Resume' : 'Pause', shortcut: 'Space', action: () => setPaused(!paused) },
+    { label: 'Reset', shortcut: 'Ctrl+R', action: () => send('cmd reset') },
+    { label: 'Export Frame', shortcut: 'Ctrl+E', action: () => send('cmd shot') },
+    { sep: true },
+    { label: 'Preset', children: presetItems() },
+    { label: 'Palette', children: paletteItems() },
+    { label: 'Advanced', children: [
+      { label: 'Speed', children: [5, 12, 20, 40].map(v => ({
+          label: `${v} it/frame`,
+          checked: +document.getElementById('rs').value === v,
+          action: () => setRange('rs', v) })) },
+      { label: 'Brush Size', children: [8, 18, 32, 60].map(v => ({
+          label: `${v} px`,
+          checked: +document.getElementById('rb').value === v,
+          action: () => setRange('rb', v) })) },
+      { sep: true },
+      { label: 'GPU Diagnostics', disabled: true },
+    ]},
+    { sep: true },
+    { label: 'Quit', shortcut: 'Ctrl+Q', action: () => send('cmd quit') },
+  ],
+  View: () => [
+    { label: 'Simulation Panel', checked: visible('sim'), action: () => toggleWin('sim') },
+    { label: 'Performance Panel', checked: visible('perf'), action: () => toggleWin('perf') },
+    { label: 'About Panel', checked: visible('about'), action: () => toggleWin('about') },
+    { sep: true },
+    { label: 'Collapse All Panels', action: collapseAll },
+    { label: 'Reset Layout', action: resetLayout },
+    { sep: true },
+    { label: 'Save Workspace', shortcut: 'Ctrl+S', disabled: true },
+    { label: 'Fullscreen', shortcut: 'F11', disabled: true },
+  ],
+  Help: () => [
+    { label: 'About WebCUDA', action: () => showWin('about') },
+    { label: 'github.com/fuugus/webcuda', disabled: true },
+  ],
+};
+
+function openBarMenu(b) {
+  closeMenus();
+  const r = b.getBoundingClientRect();
+  openRootMenu(MENUS[b.dataset.menu](), Math.round(r.left), 38);
+  menubarActive = b;
+  b.classList.add('active');
+}
+document.querySelectorAll('#menubar .mb-item').forEach(b => {
+  b.addEventListener('pointerdown', e => {
+    e.stopPropagation();
+    menubarActive === b ? closeMenus() : openBarMenu(b);
+  });
+  b.addEventListener('pointerenter', () => {
+    if (menubarActive && menubarActive !== b) openBarMenu(b);
+  });
+});
+
+function openContextMenu(x, y) {
+  openRootMenu([
+    { label: paused ? 'Resume' : 'Pause', shortcut: 'Space', action: () => setPaused(!paused) },
+    { label: 'Reset Simulation', shortcut: 'Ctrl+R', action: () => send('cmd reset') },
+    { label: 'Export Frame', shortcut: 'Ctrl+E', action: () => send('cmd shot') },
+    { sep: true },
+    { label: 'Preset', children: presetItems() },
+    { label: 'Palette', children: paletteItems() },
+    { sep: true },
+    { label: 'Panels', children: MENUS.View() },
+    { sep: true },
+    { label: 'Quit', shortcut: 'Ctrl+Q', action: () => send('cmd quit') },
+  ], x, y);
+}
+document.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (!e.target.closest('.menu')) openContextMenu(e.clientX, e.clientY);
 });
 
 /* ---------------- clock + ready handshake ---------------- */

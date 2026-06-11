@@ -52,6 +52,7 @@ struct AppState {
   bool webCaptured = false;    // mouse-down started on web UI
   bool sceneCaptured = false;  // mouse-down started on simulation
   bool webFocused = false;
+  bool uiModal = false;  // a menu is open: route all input to the web layer
 
   // cursors
   SDL_Cursor* cursors[10] = {};
@@ -75,6 +76,8 @@ struct AppState {
   int probeBarMin = 1 << 20, probeBarMax = -1;
   int probeBoxMin = 1 << 20, probeBoxMax = -1;
   bool tCollapsed = false, tExpanded = false;
+  bool tMenuOpen = false, tMenuClosed = false;
+  std::string menuShotRestore;
 
   // stats
   double fps = 0, frameMs = 0;
@@ -118,6 +121,8 @@ void brushAt(double x, double y) {
   double sy = y / std::max(1, g.fbH) * g.simH;
   simBrush((float)sx, (float)sy, g.params.brushRadius);
 }
+
+bool onQuery(const std::string& req, std::string& resp);  // defined below
 
 void setWebFocus(bool focused) {
   if (g.webFocused == focused) return;
@@ -212,7 +217,7 @@ void onMouseMove(double x, double y) {
     case kWmSizeTopLeft: case kWmSizeBottomRight: want = g.cursors[6]; break;
     case kWmSizeTopRight: case kWmSizeBottomLeft: want = g.cursors[7]; break;
     default:
-      want = (g.webCaptured ||
+      want = (g.webCaptured || g.uiModal ||
               (!g.sceneCaptured && g.overlay.uiAt((int)x, (int)y)))
                  ? g.webCursor
                  : g.cursors[2];  // crosshair
@@ -238,7 +243,10 @@ void onMouseButton(int button, bool down, int clicks) {
       }
     }
 
-    bool onUi = g.overlay.uiAt((int)g.mouseX, (int)g.mouseY);
+    // right-clicks always go to the web layer (HTML context menu); while a
+    // menu is open everything does (click-away must reach the catcher)
+    bool onUi = g.uiModal || button == 2 ||
+                g.overlay.uiAt((int)g.mouseX, (int)g.mouseY);
     if (onUi) {
       g.webCaptured = true;
       setWebFocus(true);
@@ -283,6 +291,22 @@ void onKey(const SDL_KeyboardEvent& e) {
     }
     if (e.key == SDLK_ESCAPE && !g.webFocused) {
       g.shouldQuit = true;
+      return;
+    }
+    // global app shortcuts (mirrored in the menus)
+    if (e.mod & SDL_KMOD_CTRL) {
+      if (e.key == SDLK_Q) { g.shouldQuit = true; return; }
+      if (e.key == SDLK_R) { simReset(); return; }
+      if (e.key == SDLK_E) {
+        std::string dummy;
+        onQuery("cmd shot", dummy);
+        return;
+      }
+    }
+    if (e.key == SDLK_SPACE && !g.webFocused) {
+      g.params.paused = !g.params.paused;
+      g.overlay.runJS(g.params.paused ? "__setPaused && __setPaused(true)"
+                                      : "__setPaused && __setPaused(false)");
       return;
     }
   }
@@ -330,6 +354,15 @@ bool onQuery(const std::string& req, std::string& resp) {
     g.dragPointX = rx;
     g.dragPointY = ry;
     g.uiReady = true;
+    resp = "ok";
+    return true;
+  }
+  if (req == "ui modal 1") { g.uiModal = true; resp = "ok"; return true; }
+  if (req == "ui modal 0") { g.uiModal = false; resp = "ok"; return true; }
+  if (req == "cmd shot") {
+    static int n = 0;
+    g.shotPath = exeDir() + "/webcuda-frame-" + std::to_string(++n) + ".ppm";
+    g.pendingShot = true;
     resp = "ok";
     return true;
   }
@@ -833,14 +866,38 @@ int main(int argc, char** argv) {
             g.tCollapsed = !g.overlay.uiAt(g.fbW - 200, 160);
           if (g.selftestFrame == 185)  // body back after expand?
             g.tExpanded = g.overlay.uiAt(g.fbW - 200, 160);
+          // context menu: right-click over empty background opens it (probe
+          // alpha inside the menu rect), Escape closes it
+          if (g.selftestFrame == 195) {
+            int cx = g.fbW / 2 + 60, cy = g.fbH / 2 - 40;
+            g.overlay.mouseMove(cx, cy, 0);
+            g.overlay.mouseButton(cx, cy, 2, true, 1, 0);
+            g.overlay.mouseButton(cx, cy, 2, false, 1, 0);
+          }
+          if (g.selftestFrame == 215) {
+            g.tMenuOpen = g.overlay.uiAt(g.fbW / 2 + 90, g.fbH / 2 - 10);
+            g.menuShotRestore = g.shotPath;  // extra shot: menu visible
+            g.shotPath = "menu_open.ppm";
+            g.pendingShot = true;
+          }
+          if (g.selftestFrame == 218) g.shotPath = g.menuShotRestore;
+          if (g.selftestFrame == 220) {
+            g.overlay.keyEvent(true, 0x1B, 1, 0);  // Escape
+            g.overlay.keyEvent(false, 0x1B, 1, 0);
+          }
+          if (g.selftestFrame == 240)
+            g.tMenuClosed = !g.overlay.uiAt(g.fbW / 2 + 90, g.fbH / 2 - 10);
           // after settling: did the anchored windows track their borders?
           // Performance is right-anchored (gap 40), About bottom-anchored
           // (gap 70) — the window resized +240 x / net -160 y meanwhile.
-          if (g.selftestFrame >= 185) {
+          if (g.selftestFrame >= 240) {
             std::printf(
                 "[selftest] collapse via pointer click: collapse %s, expand "
                 "%s\n",
                 g.tCollapsed ? "PASS" : "FAIL", g.tExpanded ? "PASS" : "FAIL");
+            std::printf(
+                "[selftest] context menu: open %s, escape-close %s\n",
+                g.tMenuOpen ? "PASS" : "FAIL", g.tMenuClosed ? "PASS" : "FAIL");
             int perfRight =
                 g.overlay.probeAlphaEdgeRow(86, g.fbW - 2, g.fbW - 250, true);
             int aboutBottom =
