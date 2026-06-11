@@ -75,6 +75,90 @@
   .menu .mi .sub { position:absolute; right:9px; display:flex; }
   .menu .mi svg { width:10px; height:10px; }
   .menu .sep { height:1px; margin:4px 10px; background:rgba(255,255,255,.08); }
+
+  /* ---------- shell: sidebar, bottom panel, status bar ---------- */
+  #sidebar {
+    position:fixed; left:0; top:38px; bottom:38px; width:250px;
+    display:flex; flex-direction:column;
+    background:var(--ui-bg-bar);
+    border-right:1px solid rgba(255,255,255,.08);
+    z-index:4;
+  }
+  .side-title {
+    flex:0 0 34px; display:flex; align-items:center; padding:0 16px;
+    font-size:11px; font-weight:600; letter-spacing:.8px;
+    text-transform:uppercase; color:var(--ui-text-faint);
+  }
+  .side-scroll { flex:1; overflow-y:auto; }
+  .side-head {
+    display:flex; align-items:center; gap:6px; padding:4px 8px;
+    font-size:11px; font-weight:700; letter-spacing:.6px; color:#b9c2d0;
+    background:rgba(255,255,255,.03); cursor:default;
+  }
+  .side-head svg { width:9px; height:9px; transition:transform .12s ease; }
+  .side-section.closed .side-head svg { transform:rotate(-90deg); }
+  .side-section.closed .side-body { display:none; }
+  .side-item {
+    display:flex; align-items:center; gap:6px; padding:3px 8px 3px 14px;
+    font-size:12.5px; color:#aab4c6;
+  }
+  .side-item:hover { background:rgba(255,255,255,.06); color:#dde3ee; }
+  .side-item .chk { width:14px; flex:0 0 14px; display:flex; color:var(--ui-accent); }
+  .side-item .chk svg { width:10px; height:10px; }
+  .side-item.on { color:#dde3ee; }
+  #sidebar-resizer { position:fixed; top:38px; bottom:38px; width:7px; cursor:ew-resize; z-index:6; }
+
+  #panel {
+    position:fixed; right:0; bottom:38px; height:220px;
+    display:flex; flex-direction:column;
+    background:var(--ui-bg-bar);
+    border-top:1px solid rgba(255,255,255,.08);
+    z-index:4;
+  }
+  #panel-tabs {
+    flex:0 0 32px; display:flex; align-items:stretch; gap:2px; padding:0 8px;
+    border-bottom:1px solid rgba(255,255,255,.06);
+  }
+  .ptab {
+    display:flex; align-items:center; padding:0 10px;
+    font-size:11px; font-weight:600; letter-spacing:.6px; color:var(--ui-text-faint);
+    border-bottom:1px solid transparent; cursor:default;
+  }
+  .ptab:hover { color:#c9d3e3; }
+  .ptab.active { color:#e8edf5; border-bottom-color:var(--ui-accent); }
+  #panel-tabs .spacer { flex:1; }
+  #panel-tabs button {
+    width:24px; border:none; background:transparent; color:#8a94a8;
+    align-self:center; height:24px; border-radius:4px; padding:0;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #panel-tabs button:hover { background:rgba(255,255,255,.08); color:#fff; }
+  #panel-tabs button svg { width:10px; height:10px; }
+  .pview { flex:1; overflow:auto; padding:8px 14px; }
+  .pview.hidden { display:none; }
+  .log-line { font:11.5px/1.7 ui-monospace, "Cascadia Mono", monospace; color:#aab4c6; }
+  .log-line .log-t { color:#5a6577; margin-right:10px; }
+  .keys-grid { display:grid; grid-template-columns:140px 1fr; gap:3px 16px; font-size:12px; }
+  .keys-grid kbd {
+    font:11px ui-monospace, monospace; color:#cfe0ff;
+    background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12);
+    border-radius:4px; padding:1px 6px; justify-self:start;
+  }
+  .keys-grid span { color:#9aa6ba; align-self:center; }
+  #panel-resizer { position:fixed; height:7px; cursor:ns-resize; z-index:6; }
+
+  #statusbar {
+    position:fixed; left:0; right:0; bottom:0; height:38px;
+    display:flex; align-items:stretch; padding:0 6px;
+    background:rgba(13,15,22,.92);
+    border-top:1px solid rgba(255,255,255,.08);
+    z-index:5; font-size:12px; color:#9fb0c8;
+  }
+  .sb-item { display:flex; align-items:center; gap:6px; padding:0 8px; }
+  .sb-item.click:hover { background:rgba(255,255,255,.10); color:#dde3ee; }
+  .sb-spacer { flex:1; }
+  #statusbar .dot { width:8px; height:8px; border-radius:50%; background:#4cc38a; }
+  #statusbar .dot.paused { background:#e0af68; }
   #topbar .hint { font-size:11px; color:#7c8699; }
   #topbar .clock { font-variant-numeric:tabular-nums; color:#9fb0c8; margin-left:14px; }
 
@@ -187,6 +271,64 @@
   <span class="spacer"></span>
   <span class="hint">drag background: inject chemistry · wheel: brush size · F11 fullscreen · Esc quit</span>
   <span class="clock" id="clock"></span>
+</div>
+
+<div id="sidebar">
+  <div class="side-title">Workspace</div>
+  <div class="side-scroll">
+    <div class="side-section">
+      <div class="side-head"><svg viewBox="0 0 10 10"><path d="M2 3.2l3 3.2 3-3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Panels</div>
+      <div class="side-body" id="secPanels"></div>
+    </div>
+    <div class="side-section">
+      <div class="side-head"><svg viewBox="0 0 10 10"><path d="M2 3.2l3 3.2 3-3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Presets</div>
+      <div class="side-body" id="secPresets"></div>
+    </div>
+    <div class="side-section">
+      <div class="side-head"><svg viewBox="0 0 10 10"><path d="M2 3.2l3 3.2 3-3.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Palettes</div>
+      <div class="side-body" id="secPalettes"></div>
+    </div>
+  </div>
+</div>
+<div id="sidebar-resizer"></div>
+
+<div id="panel" style="display:none">
+  <div id="panel-tabs">
+    <div class="ptab active" data-tab="log">Log</div>
+    <div class="ptab" data-tab="stats">Stats</div>
+    <div class="ptab" data-tab="keys">Shortcuts</div>
+    <span class="spacer"></span>
+    <button id="panel-close" title="close panel">
+      <svg viewBox="0 0 10 10"><path d="M1.8 1.8l6.4 6.4M8.2 1.8l-6.4 6.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="pview" id="view-log"><div id="log"></div></div>
+  <div class="pview hidden" id="view-stats"><dl class="stats" id="bstats" style="max-width:420px"></dl></div>
+  <div class="pview hidden" id="view-keys">
+    <div class="keys-grid">
+      <kbd>Space</kbd><span>pause / resume the simulation</span>
+      <kbd>Ctrl+R</kbd><span>reset the simulation field</span>
+      <kbd>Ctrl+E</kbd><span>export the current frame</span>
+      <kbd>Ctrl+B</kbd><span>toggle sidebar</span>
+      <kbd>Ctrl+J</kbd><span>toggle bottom panel</span>
+      <kbd>F11</kbd><span>fullscreen</span>
+      <kbd>Ctrl+Q / Esc</kbd><span>quit</span>
+      <kbd>Left-drag</kbd><span>inject chemistry into the simulation</span>
+      <kbd>Wheel</kbd><span>brush size (over the simulation)</span>
+      <kbd>Right-click</kbd><span>context menu</span>
+    </div>
+  </div>
+</div>
+<div id="panel-resizer" style="display:none"></div>
+
+<div id="statusbar">
+  <span class="sb-item click" id="sbPause"><span class="dot" id="sbDot"></span><span id="sbState">Running</span></span>
+  <span class="sb-item click" id="sbPreset">Coral</span>
+  <span class="sb-item click" id="sbPalette">Abyss</span>
+  <span class="sb-spacer"></span>
+  <span class="sb-item" id="sbFps">— fps</span>
+  <span class="sb-item" id="sbCuda">— ms</span>
+  <span class="sb-item" id="sbSim">—</span>
 </div>
 
 <!-- stretch sentinel: native side skips overlay frames where this 4x2 px
@@ -362,8 +504,10 @@ function makeWindow(id, title, x, y, w, h, anchors = '') {
   tb.addEventListener('dblclick', e => {
     if (!e.target.closest('button')) toggleCollapse();
   });
-  el.querySelector('.close').addEventListener('click',
-      () => el.style.display = 'none');
+  el.querySelector('.close').addEventListener('click', () => {
+    el.style.display = 'none';
+    window.__refreshSidebar && __refreshSidebar();
+  });
   focus();
   return el.querySelector('.body');
 }
@@ -374,13 +518,18 @@ function updateAnchorDists(st) {
   st.distB = innerHeight - (st.y + st.el.offsetHeight);
 }
 function clamp(st) {
+  const statusH = window.shellState && shellState.statusVis ? 38 : 0;
   st.x = Math.min(Math.max(st.x, 60 - st.el.offsetWidth), innerWidth - 60);
-  st.y = Math.min(Math.max(st.y, 38), innerHeight - 24);
+  st.y = Math.min(Math.max(st.y, 38), innerHeight - statusH - 26);
 }
 
-// anchored windows follow their border; everything stays reachable
+// anchored windows follow their border; everything stays reachable.
+// hidden windows are skipped: their offsetWidth/Height read 0 and would
+// corrupt the anchor math — they re-anchor in showWin() instead
 window.addEventListener('resize', () => {
+  window.shellState && typeof applyShell === 'function' && applyShell();
   for (const st of Object.values(wins)) {
+    if (st.el.style.display === 'none') continue;
     if (st.anchors.includes('r'))
       st.x = innerWidth - st.distR - st.el.offsetWidth;
     if (st.anchors.includes('b'))
@@ -392,17 +541,24 @@ window.addEventListener('resize', () => {
 
 /* ---------------- panel helpers (used by menus) ---------------- */
 const DEFAULT_LAYOUT = () => ({
-  sim:   { x: 40, y: 70, w: 330, h: 330 },
+  sim:   { x: 290, y: 70, w: 330, h: 330 },  // clear of the sidebar
   perf:  { x: innerWidth - 360, y: 70, w: 320, h: 300 },
   about: { x: innerWidth / 2 - 210, y: innerHeight - 280, w: 420, h: 210 },
 });
 const visible = id => wins[id] && wins[id].el.style.display !== 'none';
 function showWin(id) {
-  wins[id].el.style.display = 'flex';
-  wins[id].el.style.zIndex = ++zTop;
+  const st = wins[id];
+  st.el.style.display = 'flex';
+  st.el.style.zIndex = ++zTop;
+  // catch up on anchor moves missed while hidden
+  if (st.anchors.includes('r')) st.x = innerWidth - st.distR - st.el.offsetWidth;
+  if (st.anchors.includes('b')) st.y = innerHeight - st.distB - st.el.offsetHeight;
+  clamp(st);
+  apply(st);
 }
 function toggleWin(id) {
   visible(id) ? wins[id].el.style.display = 'none' : showWin(id);
+  window.__refreshSidebar && __refreshSidebar();
 }
 function collapseAll() {
   for (const st of Object.values(wins))
@@ -473,6 +629,9 @@ document.querySelectorAll('.palettes button').forEach(b => {
     document.querySelectorAll('.palettes button').forEach(n => n.classList.remove('active'));
     b.classList.add('active');
     send(`set palette ${b.dataset.p}`);
+    updateStatusbar();
+    renderSidebar();
+    uiLog(`Palette: ${paletteName()}`);
   });
 });
 document.querySelector('.palettes button').classList.add('active');
@@ -484,6 +643,9 @@ document.querySelectorAll('#presets button').forEach(b => {
     rk.dispatchEvent(new Event('input'));
     document.querySelectorAll('#presets button').forEach(n => n.classList.remove('active'));
     b.classList.add('active');
+    updateStatusbar();
+    renderSidebar();
+    uiLog(`Preset: ${b.textContent} (F=${b.dataset.f}, k=${b.dataset.k})`);
   });
 });
 
@@ -494,6 +656,8 @@ function setPaused(p) {
   b.textContent = paused ? 'Resume' : 'Pause';
   b.classList.toggle('active', paused);
   send(paused ? 'cmd pause' : 'cmd resume');
+  updateStatusbar();
+  uiLog(paused ? 'Simulation paused' : 'Simulation resumed');
 }
 window.__setPaused = p => { if (p !== paused) setPaused(p); };  // native sync
 document.getElementById('bPause').addEventListener('click', () => setPaused(!paused));
@@ -530,6 +694,23 @@ window.__stats = o => {
   set('sUp', o.upMs.toFixed(2) + ' ms');
   set('sSim', o.sim);
   set('sGpu', o.gpu);
+  set('sbFps', o.fps.toFixed(0) + ' fps');
+  set('sbCuda', 'cuda ' + o.cudaMs.toFixed(2) + ' ms');
+  set('sbSim', o.sim);
+  const bs = document.getElementById('bstats');
+  if (bs && !bs.closest('.pview').classList.contains('hidden')) {
+    bs.innerHTML = '';
+    for (const [k, v] of [['Render', o.fps.toFixed(1) + ' fps'],
+                          ['Frame time', o.frameMs.toFixed(2) + ' ms'],
+                          ['CUDA kernels', o.cudaMs.toFixed(2) + ' ms'],
+                          ['Overlay paints', o.paints.toFixed(0) + ' /s'],
+                          ['Overlay upload', o.upMs.toFixed(2) + ' ms'],
+                          ['Sim grid', o.sim], ['GPU', o.gpu]]) {
+      const dt = document.createElement('dt'), dd = document.createElement('dd');
+      dt.textContent = k; dd.textContent = v;
+      bs.append(dt, dd);
+    }
+  }
   hist.push(o.fps);
   if (hist.length > 240) hist.shift();
   const cv = document.getElementById('spark'), ctx = cv.getContext('2d');
@@ -557,6 +738,7 @@ aboutBody.innerHTML = `
   these windows stays at full refresh rate. Input is routed by the overlay's
   alpha channel: clicks on transparent areas reach the simulation.</p>
   <p class="about" id="aboutGpu"></p>`;
+wins.about.el.style.display = 'none';  // bottom area belongs to the panel
 send('info', r => {
   const [gpu, sim] = r.split('|');
   document.getElementById('aboutGpu').innerHTML = `GPU: <code>${gpu}</code> · sim grid <code>${sim}</code>`;
@@ -748,6 +930,10 @@ const MENUS = {
     { label: 'Quit', shortcut: 'Ctrl+Q', action: () => send('cmd quit') },
   ],
   View: () => [
+    { label: 'Sidebar', shortcut: 'Ctrl+B', checked: shell.sideVis, action: toggleSidebar },
+    { label: 'Bottom Panel', shortcut: 'Ctrl+J', checked: shell.panelVis, action: togglePanel },
+    { label: 'Status Bar', checked: shell.statusVis, action: toggleStatusbar },
+    { sep: true },
     { label: 'Simulation Panel', checked: visible('sim'), action: () => toggleWin('sim') },
     { label: 'Performance Panel', checked: visible('perf'), action: () => toggleWin('perf') },
     { label: 'About Panel', checked: visible('about'), action: () => toggleWin('about') },
@@ -814,6 +1000,155 @@ document.addEventListener('contextmenu', e => {
   e.preventDefault();
   if (!e.target.closest('.menu')) openContextMenu(e.clientX, e.clientY);
 });
+
+/* ---------------- shell: sidebar, bottom panel, status bar ---------------- */
+const shell = { sideW: 250, sideVis: true, panelH: 220, panelVis: true, statusVis: true };
+window.shellState = shell;  // safe reference for code that runs before this block
+const $id = id => document.getElementById(id);
+
+function applyShell() {
+  const statusH = shell.statusVis ? 38 : 0;
+  $id('statusbar').style.display = shell.statusVis ? 'flex' : 'none';
+  const sb = $id('sidebar'), sr = $id('sidebar-resizer');
+  sb.style.display = shell.sideVis ? 'flex' : 'none';
+  sb.style.width = shell.sideW + 'px';
+  sb.style.bottom = statusH + 'px';
+  sr.style.display = shell.sideVis ? 'block' : 'none';
+  sr.style.left = (shell.sideW - 3) + 'px';
+  sr.style.bottom = statusH + 'px';
+  const left = shell.sideVis ? shell.sideW : 0;
+  const p = $id('panel'), pr = $id('panel-resizer');
+  p.style.display = shell.panelVis ? 'flex' : 'none';
+  p.style.left = left + 'px';
+  p.style.height = shell.panelH + 'px';
+  p.style.bottom = statusH + 'px';
+  pr.style.display = shell.panelVis ? 'block' : 'none';
+  pr.style.left = left + 'px';
+  pr.style.right = '0';
+  pr.style.bottom = (statusH + shell.panelH - 3) + 'px';
+}
+function toggleSidebar() {
+  shell.sideVis = !shell.sideVis;
+  applyShell(); renderSidebar();
+  uiLog(`Sidebar ${shell.sideVis ? 'shown' : 'hidden'}`);
+}
+function togglePanel() {
+  shell.panelVis = !shell.panelVis;
+  applyShell();
+  uiLog(`Bottom panel ${shell.panelVis ? 'shown' : 'hidden'}`);
+}
+function toggleStatusbar() { shell.statusVis = !shell.statusVis; applyShell(); }
+window.__toggleSidebar = toggleSidebar;   // native Ctrl+B
+window.__togglePanel = togglePanel;       // native Ctrl+J
+
+/* border-drag resizing */
+function wireResizer(el, onMove) {
+  el.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    el.setPointerCapture(ev.pointerId);
+    const move = e => { onMove(e); applyShell(); };
+    const up = () => { el.releasePointerCapture(ev.pointerId);
+                       el.removeEventListener('pointermove', move);
+                       el.removeEventListener('pointerup', up); };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  });
+}
+wireResizer($id('sidebar-resizer'),
+    e => shell.sideW = Math.round(Math.min(Math.max(e.clientX, 170), innerWidth * 0.5)));
+wireResizer($id('panel-resizer'),
+    e => shell.panelH = Math.round(Math.min(Math.max(
+        innerHeight - (shell.statusVis ? 38 : 0) - e.clientY, 96), innerHeight * 0.6)));
+
+/* bottom panel tabs */
+document.querySelectorAll('.ptab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.ptab').forEach(n => n.classList.remove('active'));
+    t.classList.add('active');
+    document.querySelectorAll('.pview').forEach(v =>
+        v.classList.toggle('hidden', v.id !== 'view-' + t.dataset.tab));
+  });
+});
+$id('panel-close').addEventListener('click', togglePanel);
+
+/* log view */
+function uiLog(msg) {
+  const l = $id('log');
+  const d = document.createElement('div');
+  d.className = 'log-line';
+  const t = document.createElement('span');
+  t.className = 'log-t';
+  t.textContent = new Date().toLocaleTimeString();
+  d.appendChild(t);
+  d.appendChild(document.createTextNode(msg));
+  l.appendChild(d);
+  while (l.children.length > 200) l.firstChild.remove();
+  l.scrollTop = l.scrollHeight;
+}
+
+/* sidebar sections */
+document.querySelectorAll('.side-head').forEach(h =>
+    h.addEventListener('click', () => h.parentElement.classList.toggle('closed')));
+function renderSidebar() {
+  if (!shell.sideVis) return;
+  const fill = (host, items) => {
+    host.innerHTML = '';
+    for (const it of items) {
+      const d = document.createElement('div');
+      d.className = 'side-item' + (it.checked ? ' on' : '');
+      const c = document.createElement('span');
+      c.className = 'chk';
+      if (it.checked) c.innerHTML = CHK;
+      const l = document.createElement('span');
+      l.textContent = it.label;
+      d.append(c, l);
+      d.addEventListener('click', () => { it.action(); renderSidebar(); });
+      host.appendChild(d);
+    }
+  };
+  fill($id('secPanels'), [['sim','Simulation'],['perf','Performance'],['about','About']]
+      .map(([id, n]) => ({ label: n, checked: visible(id), action: () => toggleWin(id) })));
+  fill($id('secPresets'), presetItems());
+  fill($id('secPalettes'), paletteItems());
+}
+window.__refreshSidebar = renderSidebar;
+
+/* status bar */
+function paletteName() {
+  const i = [...document.querySelectorAll('.palettes button')]
+      .findIndex(b => b.classList.contains('active'));
+  return ['Abyss', 'Ember', 'Bio', 'Mono'][i] || '—';
+}
+function presetName() {
+  const b = document.querySelector('#presets button.active');
+  return b ? b.textContent : 'Custom';
+}
+function updateStatusbar() {
+  $id('sbState').textContent = paused ? 'Paused' : 'Running';
+  $id('sbDot').classList.toggle('paused', paused);
+  $id('sbPreset').textContent = presetName();
+  $id('sbPalette').textContent = paletteName();
+}
+function openMenuAbove(spec, x) {
+  openRootMenu(spec, x, 0);
+  const m = menuStack[menuStack.length - 1].el;
+  m.style.top = Math.max(42, innerHeight - (shell.statusVis ? 38 : 0) -
+                              m.offsetHeight - 4) + 'px';
+}
+$id('sbPause').addEventListener('click', () => setPaused(!paused));
+$id('sbPreset').addEventListener('click', e => {
+  e.stopPropagation();
+  openMenuAbove(presetItems(), $id('sbPreset').getBoundingClientRect().left);
+});
+$id('sbPalette').addEventListener('click', e => {
+  e.stopPropagation();
+  openMenuAbove(paletteItems(), $id('sbPalette').getBoundingClientRect().left);
+});
+
+applyShell();
+renderSidebar();
+updateStatusbar();
+uiLog('UI ready — CUDA × OpenGL × CEF pipeline up');
 
 /* ---------------- clock + ready handshake ---------------- */
 const tick = () => document.getElementById('clock').textContent =

@@ -76,7 +76,7 @@ struct AppState {
   int probeBarMin = 1 << 20, probeBarMax = -1;
   int probeBoxMin = 1 << 20, probeBoxMax = -1;
   bool tCollapsed = false, tExpanded = false;
-  bool tMenuOpen = false, tMenuClosed = false;
+  bool tMenuOpen = false, tMenuClosed = false, tPanel = false;
   std::string menuShotRestore;
 
   // stats
@@ -300,6 +300,14 @@ void onKey(const SDL_KeyboardEvent& e) {
       if (e.key == SDLK_E) {
         std::string dummy;
         onQuery("cmd shot", dummy);
+        return;
+      }
+      if (e.key == SDLK_B) {
+        g.overlay.runJS("__toggleSidebar && __toggleSidebar()");
+        return;
+      }
+      if (e.key == SDLK_J) {
+        g.overlay.runJS("__togglePanel && __togglePanel()");
         return;
       }
     }
@@ -832,9 +840,10 @@ int main(int argc, char** argv) {
           else if (g.selftestFrame > 80 && g.selftestFrame <= 120)
             SDL_SetWindowSize(g.window, w + 6, h + 4);
           if (g.selftestFrame > 40) {
-            // probe Chromium's output (CPU mirror): topbar bottom edge at the
-            // left margin, dragged sim-window top edge at its titlebar column
-            int bar = g.overlay.probeAlphaEdge(12, 20, 120, false);
+            // probe Chromium's output (CPU mirror): topbar bottom edge just
+            // right of the 250px sidebar, dragged sim-window top edge at its
+            // titlebar column
+            int bar = g.overlay.probeAlphaEdge(270, 20, 120, false);
             int box = g.overlay.probeAlphaEdge(
                 (int)(g.dragPointX + g.dragFrames * 2.0), 45, g.fbH - 10, true);
             if (bar >= 0) {
@@ -870,15 +879,15 @@ int main(int argc, char** argv) {
           if (g.selftestFrame == 185)  // body back after expand?
             g.tExpanded = g.overlay.uiAt(g.fbW - 200, 160);
           // context menu: right-click over empty background opens it (probe
-          // alpha inside the menu rect), Escape closes it
+          // alpha inside the menu rect), Escape closes it. (400,520) is clear
+          // of sidebar, the dragged sim window, about and the status bar.
           if (g.selftestFrame == 195) {
-            int cx = g.fbW / 2 + 60, cy = g.fbH / 2 - 40;
-            g.overlay.mouseMove(cx, cy, 0);
-            g.overlay.mouseButton(cx, cy, 2, true, 1, 0);
-            g.overlay.mouseButton(cx, cy, 2, false, 1, 0);
+            g.overlay.mouseMove(400, 520, 0);
+            g.overlay.mouseButton(400, 520, 2, true, 1, 0);
+            g.overlay.mouseButton(400, 520, 2, false, 1, 0);
           }
           if (g.selftestFrame == 215) {
-            g.tMenuOpen = g.overlay.uiAt(g.fbW / 2 + 90, g.fbH / 2 - 10);
+            g.tMenuOpen = g.overlay.uiAt(430, 545);
             g.menuShotRestore = g.shotPath;  // extra shot: menu visible
             g.shotPath = "menu_open.ppm";
             g.pendingShot = true;
@@ -889,11 +898,16 @@ int main(int argc, char** argv) {
             g.overlay.keyEvent(false, 0x1B, 1, 0);
           }
           if (g.selftestFrame == 240)
-            g.tMenuClosed = !g.overlay.uiAt(g.fbW / 2 + 90, g.fbH / 2 - 10);
-          // after settling: did the anchored windows track their borders?
-          // Performance is right-anchored (gap 40), About bottom-anchored
-          // (gap 70) — the window resized +240 x / net -160 y meanwhile.
-          if (g.selftestFrame >= 240) {
+            g.tMenuClosed = !g.overlay.uiAt(430, 545);
+          // the panel is open and about hidden by default; flip both so the
+          // bottom-anchor measurement has a clear column (also exercises the
+          // panel toggle), then restore for the final screenshot
+          if (g.selftestFrame == 230)
+            g.overlay.runJS(
+                "__togglePanel && __togglePanel(); toggleWin('about')");
+          if (g.selftestFrame == 243)
+            g.tPanel = !g.overlay.uiAt(400, g.fbH - 100);
+          if (g.selftestFrame == 245) {
             std::printf(
                 "[selftest] collapse via pointer click: collapse %s, expand "
                 "%s\n",
@@ -903,8 +917,9 @@ int main(int argc, char** argv) {
                 g.tMenuOpen ? "PASS" : "FAIL", g.tMenuClosed ? "PASS" : "FAIL");
             int perfRight =
                 g.overlay.probeAlphaEdgeRow(86, g.fbW - 2, g.fbW - 250, true);
+            // scan starts above the 38px status bar
             int aboutBottom =
-                g.overlay.probeAlphaEdge(g.fbW / 2, g.fbH - 2, g.fbH - 250, true);
+                g.overlay.probeAlphaEdge(g.fbW / 2, g.fbH - 44, g.fbH - 250, true);
             int gapR = perfRight < 0 ? -1 : g.fbW - 1 - perfRight;
             int gapB = aboutBottom < 0 ? -1 : g.fbH - 1 - aboutBottom;
             std::printf(
@@ -914,6 +929,13 @@ int main(int argc, char** argv) {
                 (std::abs(gapR - 40) <= 2 && std::abs(gapB - 70) <= 2)
                     ? "PASS"
                     : "FAIL");
+          }
+          if (g.selftestFrame == 250)  // restore defaults for the screenshot
+            g.overlay.runJS(
+                "toggleWin('about'); __togglePanel && __togglePanel()");
+          if (g.selftestFrame >= 270) {
+            std::printf("[selftest] bottom panel toggle: %s\n",
+                        g.tPanel ? "PASS" : "FAIL");
             g.selftestPhase = 4;
             g.pendingShot = true;
           }
