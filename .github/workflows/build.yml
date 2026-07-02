@@ -44,9 +44,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install CUDA toolkit (nvcc + cudart)
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: '12.6.2'
+          # CUDA must be young enough for the runner's MSVC: 12.6's cudafe++
+          # crashes on VS 2026 headers
+          cuda: '13.2.0'
           method: network
           sub-packages: '["nvcc", "cudart"]'
 
