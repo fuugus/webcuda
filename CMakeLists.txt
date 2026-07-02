@@ -71,7 +71,8 @@ add_executable(webcuda
   src/overlay.cpp
   src/gl_funcs.cpp)
 
-target_include_directories(webcuda PRIVATE "${CEF_ROOT}" ${CUDAToolkit_INCLUDE_DIRS})
+target_include_directories(webcuda PRIVATE "${CEF_ROOT}" ${CUDAToolkit_INCLUDE_DIRS}
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/khronos")  # vendored KHR/khrplatform.h
 target_compile_definitions(webcuda PRIVATE $<$<CONFIG:Release>:NDEBUG>)
 if(MSVC)
   target_compile_options(webcuda PRIVATE /W3)
