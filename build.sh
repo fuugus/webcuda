@@ -90,7 +90,10 @@ build_linux() {
 build_windows() {
   fetch_cef windows
   # Ninja + MSVC env: nvcc drives cl.exe directly, no CUDA MSBuild toolset
-  # needed (run from a "x64 Native Tools" shell or after msvc-dev-cmd in CI)
+  # needed (run from a "x64 Native Tools" shell or after msvc-dev-cmd in CI).
+  # allow-unsupported-compiler: nvcc hard-gates on the MSVC version; new VS
+  # updates ship faster than CUDA's allowlist and work fine for this code.
+  export CUDAFLAGS="-allow-unsupported-compiler ${CUDAFLAGS:-}"
   echo "[build] windows: Ninja + MSVC (needs vcvars in the environment)"
   cmake -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCEF_ROOT="$PWD/third_party/cef-windows" \
