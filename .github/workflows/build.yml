@@ -43,14 +43,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install CUDA toolkit (nvcc + cudart)
+      - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           # CUDA must be young enough for the runner's MSVC: 12.6's cudafe++
-          # crashes on VS 2026 headers
+          # crashes on VS 2026 headers. Full install: the 13.x sub-package
+          # split leaves out crt/ headers that cuda_runtime.h needs.
           cuda: '13.2.0'
           method: network
-          sub-packages: '["nvcc", "cudart"]'
 
       - name: Cache CEF distribution
         uses: actions/cache@v4
