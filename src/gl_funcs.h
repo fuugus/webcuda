@@ -1,10 +1,16 @@
 // Minimal OpenGL >1.1 function loader (avoids a GLEW/glad dependency).
-// GL 1.1 entry points come from libGL directly; everything newer is loaded
-// through glfwGetProcAddress into the `glf` struct.
+// GL 1.1 entry points come from the system GL library directly; everything
+// newer is loaded through SDL_GL_GetProcAddress into the `glf` struct.
 #pragma once
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>  // GL/gl.h needs APIENTRY on Windows
+#endif
 #include <GL/gl.h>
-#include <GL/glext.h>
+// vendored: MSVC ships GL 1.1 headers only, no glext.h
+#include "khronos/glext.h"
 
 struct GLFns {
   PFNGLCREATESHADERPROC        CreateShader;

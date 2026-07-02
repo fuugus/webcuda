@@ -13,11 +13,18 @@ endif()
 project(webcuda LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)  # CEF 148 headers use C++20 concepts
+
+if(WIN32)
+  # CEF binaries link the static CRT; everything in the process must match
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 
-# ---------------- CEF (binary distribution in third_party/cef) ----------------
-set(CEF_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cef")
+# ---------------- CEF (binary distribution; build.sh fetches per platform) ----
+if(NOT DEFINED CEF_ROOT)
+  set(CEF_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cef")
+endif()
 list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
 find_package(CEF REQUIRED)
 add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}" libcef_dll_wrapper)
@@ -26,7 +33,9 @@ ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
 # ---------------- other deps ----------------
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenGL REQUIRED)
-find_package(X11 REQUIRED)
+if(UNIX AND NOT APPLE)
+  find_package(X11 REQUIRED)  # frameless window protocol; Linux only
+endif()
 
 # SDL3, vendored + static: its X11 backend implements the _NET_WM_SYNC_REQUEST
 # frame-sync handshake (acked inside SDL_GL_SwapWindow), which is what makes
@@ -64,20 +73,30 @@ add_executable(webcuda
 
 target_include_directories(webcuda PRIVATE "${CEF_ROOT}" ${CUDAToolkit_INCLUDE_DIRS})
 target_compile_definitions(webcuda PRIVATE $<$<CONFIG:Release>:NDEBUG>)
-target_compile_options(webcuda PRIVATE -O2 -Wall)
+if(MSVC)
+  target_compile_options(webcuda PRIVATE /W3)
+else()
+  target_compile_options(webcuda PRIVATE -O2 -Wall)
+endif()
 target_link_libraries(webcuda PRIVATE
   libcef_lib
   libcef_dll_wrapper
   sim
   SDL3::SDL3-static
   OpenGL::GL
-  X11::X11
   CUDA::cudart)
-
-# libcef.so sits next to the executable
-set_target_properties(webcuda PROPERTIES
-  BUILD_RPATH "$ORIGIN"
-  INSTALL_RPATH "$ORIGIN")
+if(UNIX AND NOT APPLE)
+  target_link_libraries(webcuda PRIVATE X11::X11)
+  # libcef.so sits next to the executable
+  set_target_properties(webcuda PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN")
+endif()
+if(WIN32)
+  # GUI subsystem but keep main() as the entry point
+  set_target_properties(webcuda PROPERTIES WIN32_EXECUTABLE TRUE)
+  target_link_options(webcuda PRIVATE /ENTRY:mainCRTStartup)
+endif()
 
 # ---------------- runtime files next to the binary ----------------
 add_custom_command(TARGET webcuda POST_BUILD

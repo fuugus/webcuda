@@ -1,0 +1,61 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Compile verification only: GitHub runners have no NVIDIA GPU, so the
+# self-test cannot run here. nvcc compiles fine without a GPU; build.sh
+# falls back to a fixed -DCMAKE_CUDA_ARCHITECTURES set when none is found.
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies (X11 + GL for SDL3 and the app)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxkbcommon-dev libwayland-dev libegl-dev
+
+      - name: Install CUDA toolkit (nvcc + cudart)
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.6.2'
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Cache CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: third_party/cef-linux
+          key: cef-linux-148.0.10
+
+      - name: Build
+        run: ./build.sh linux
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit (nvcc + cudart)
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.6.2'
+          method: network
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      - name: Cache CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: third_party/cef-windows
+          key: cef-windows-148.0.10
+
+      - name: Build
+        shell: bash
+        run: ./build.sh windows

@@ -1,5 +1,11 @@
 #include "overlay.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>  // CefMainArgs wants the HINSTANCE on Windows
+#endif
+
 #include "gl_funcs.h"
 
 #include <SDL3/SDL_keycode.h>
@@ -39,7 +45,9 @@ class WebApp : public CefApp,
     // reads back, adding latency; for a DOM-only UI software raster is faster.
     command_line->AppendSwitch("disable-gpu");
     command_line->AppendSwitch("disable-gpu-compositing");
+#ifdef __linux__
     command_line->AppendSwitchWithValue("ozone-platform", "x11");
+#endif
   }
 
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override {
@@ -319,7 +327,11 @@ int Overlay::ExecuteSubProcess(int argc, char** argv) {
   g_argc = argc;
   g_argv = argv;
   g_app = new WebApp();
+#ifdef _WIN32
+  CefMainArgs args(GetModuleHandle(nullptr));
+#else
   CefMainArgs args(argc, argv);
+#endif
   return CefExecuteProcess(args, g_app, nullptr);
 }
 
@@ -341,7 +353,11 @@ bool Overlay::init(const Config& cfg, QueryHandler onQuery,
   if (!cfg.localesDir.empty())
     CefString(&settings.locales_dir_path) = cfg.localesDir;
 
+#ifdef _WIN32
+  CefMainArgs args(GetModuleHandle(nullptr));
+#else
   CefMainArgs args(g_argc, g_argv);
+#endif
   if (!CefInitialize(args, settings, g_app, nullptr)) {
     std::fprintf(stderr, "[cef] CefInitialize failed\n");
     return false;

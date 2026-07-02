@@ -1,5 +1,10 @@
 #include "sim.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>  // GL/gl.h needs APIENTRY on Windows
+#endif
 #include <GL/gl.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>

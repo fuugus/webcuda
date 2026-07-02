@@ -9,7 +9,9 @@
 // manager waits for our frame on every interactive resize step — no mismatch
 // frames, no jitter.
 
+#ifdef __linux__
 #include <X11/Xlib.h>
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -26,8 +29,13 @@
 #include "overlay.h"
 #include "sim.h"
 
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <limits.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -38,9 +46,11 @@ struct AppState {
   SimParams params;
   SimStats simStats;
 
+#ifdef __linux__
   // native X11 handles (frameless move/resize protocol); null off X11
   Display* xdpy = nullptr;
   ::Window xwin = 0;
+#endif
 
   int fbW = 0, fbH = 0;
   int simW = 0, simH = 0;
@@ -103,6 +113,14 @@ AppState g;
 double nowSec() { return SDL_GetTicksNS() * 1e-9; }
 
 std::string exeDir() {
+#ifdef _WIN32
+  char buf[MAX_PATH];
+  DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return ".";
+  std::string s(buf, n);
+  auto p = s.find_last_of("\\/");
+  return p == std::string::npos ? "." : s.substr(0, p);
+#else
   char buf[PATH_MAX];
   ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
   if (n <= 0) return ".";
@@ -110,6 +128,7 @@ std::string exeDir() {
   std::string s(buf);
   auto p = s.rfind('/');
   return p == std::string::npos ? "." : s.substr(0, p);
+#endif
 }
 
 uint32_t mods() {
@@ -147,8 +166,12 @@ enum {  // _NET_WM_MOVERESIZE directions
 };
 
 bool canMoveResize() {
+#ifdef __linux__
   return g.frameless && g.xdpy &&
          !(SDL_GetWindowFlags(g.window) & SDL_WINDOW_FULLSCREEN);
+#else
+  return false;  // frameless chrome is X11-only for now
+#endif
 }
 
 // Direction for the resize border under the cursor, or -1.
@@ -170,6 +193,9 @@ int edgeDir(double x, double y) {
 }
 
 void startWmMoveResize(int dir) {
+#ifndef __linux__
+  (void)dir;
+#else
   if (!canMoveResize()) return;
 
   // The WM takes over the pointer: we will never see the button release.
@@ -195,6 +221,7 @@ void startWmMoveResize(int dir) {
   XSendEvent(g.xdpy, DefaultRootWindow(g.xdpy), False,
              SubstructureRedirectMask | SubstructureNotifyMask, &ev);
   XFlush(g.xdpy);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -579,6 +606,7 @@ int main(int argc, char** argv) {
   if (!initGLFunctions()) return 1;
   std::printf("[gl] renderer: %s\n", (const char*)glGetString(GL_RENDERER));
 
+#ifdef __linux__
   if (!std::strcmp(driver, "x11")) {
     SDL_PropertiesID props = SDL_GetWindowProperties(g.window);
     g.xdpy = (Display*)SDL_GetPointerProperty(
@@ -593,6 +621,7 @@ int main(int argc, char** argv) {
     wa.bit_gravity = NorthWestGravity;
     XChangeWindowAttributes(g.xdpy, g.xwin, CWBitGravity, &wa);
   }
+#endif
 
   SDL_GetWindowSizeInPixels(g.window, &g.fbW, &g.fbH);
   g.simW = g.fbW;
@@ -648,8 +677,14 @@ int main(int argc, char** argv) {
   // selftest runs get an isolated cache: a killed run leaves Chromium's
   // singleton lock behind, and the next launch would forward itself to the
   // "existing instance" instead of starting
+#ifdef _WIN32
+  const char* tmpEnv = std::getenv("TEMP");
+  const std::string tmpDir = tmpEnv ? tmpEnv : ".";
+#else
+  const std::string tmpDir = "/tmp";
+#endif
   cfg.cachePath = g.selftest
-                      ? "/tmp/webcuda-selftest-" + std::to_string(getpid())
+                      ? tmpDir + "/webcuda-selftest-" + std::to_string(getpid())
                       : dir + "/cef_cache";
   cfg.resourceDir = dir;
   cfg.localesDir = dir + "/locales";

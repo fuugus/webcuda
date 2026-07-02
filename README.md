@@ -66,29 +66,32 @@ The built-in self-test measures this end-to-end: it synthetically drags the
 | `ui/index.html` | the overlay UI: window manager (drag/resize/z-order), controls, stats |
 | `third_party/cef/` | CEF binary distribution (not in git; see below) |
 
-## Building (Linux)
-
-Dependencies: CUDA toolkit 13.x, `libgl-dev`, `libx11-dev` (+ the usual X11
-extension headers: xext, xrandr, xcursor, xfixes, xi), cmake ≥ 3.26. SDL3 is
-fetched and built automatically. CEF 148 linux64-minimal extracted to
-`third_party/cef`:
+## Building
 
 ```sh
-cd third_party
-curl -LO "https://cef-builds.spotifycdn.com/cef_binary_148.0.10%2Bg7ee53f5%2Bchromium-148.0.7778.218_linux64_minimal.tar.bz2"
-tar xjf cef_binary_*.tar.bz2 && mv cef_binary_*linux64_minimal cef
+./build.sh              # builds the host platform (downloads CEF on first run)
+./build.sh linux --test # build + run the self-test (needs display + NVIDIA GPU)
+./build.sh windows      # on a Windows host (Git Bash + MSVC + CUDA toolkit)
 ```
 
-```sh
-cmake -B build -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CUDA_ARCHITECTURES=120 \
-      -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.1/bin/nvcc
-cmake --build build -j
-./build/webcuda
-```
+The script auto-detects the host, fetches the matching CEF binary
+distribution into `third_party/cef-<platform>`, picks the newest CUDA
+toolkit over a stale distro `nvcc`, and selects GPU architectures (`native`
+with a GPU present, a fixed set otherwise — which is how the CI compiles
+without one). SDL3 is fetched and built automatically by CMake.
 
-(The two `-D`s work around Ubuntu shipping an older `/usr/bin/nvcc` and
-CMake 3.31 probing the removed `sm_52`.)
+| platform | status |
+|---|---|
+| Linux x86_64 | full support, runtime-tested (this is the reference platform) |
+| Windows x86_64 | full stack supported (CUDA/GL/SDL3/CEF); frameless chrome falls back to native decorations; compile-verified in CI, runtime testing wanted |
+| macOS | **unsupported** — CUDA does not exist on Apple platforms (Apple dropped NVIDIA in 2019; Apple Silicon cannot host NVIDIA GPUs). The shell would port with a Metal/CPU compute backend behind `sim.h` |
+
+nvcc cannot cross-compile (Windows CUDA requires MSVC), so each platform
+builds natively; `.github/workflows/build.yml` compile-checks Linux and
+Windows on every push.
+
+Linux dependencies: CUDA toolkit, `libgl-dev`, `libx11-dev` + X11 extension
+headers (xext, xrandr, xcursor, xfixes, xi), cmake ≥ 3.26.
 
 ## Window chrome
 
