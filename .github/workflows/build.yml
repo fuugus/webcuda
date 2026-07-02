@@ -59,3 +59,16 @@ jobs:
       - name: Build
         shell: bash
         run: ./build.sh windows
+
+      # The staged output dir is the complete runnable app: webcuda.exe,
+      # CEF runtime (libcef.dll, .pak, locales), and the ui/ overlay.
+      - name: Upload runnable Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: webcuda-windows
+          path: |
+            build-windows/Release/
+            !build-windows/Release/*.lib
+            !build-windows/Release/*.exp
+            !build-windows/Release/*.pdb
+          retention-days: 30

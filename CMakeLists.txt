@@ -63,7 +63,7 @@ FetchContent_MakeAvailable(SDL3)
 add_library(sim STATIC src/sim.cu)
 set_target_properties(sim PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(sim PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
-target_link_libraries(sim PRIVATE CUDA::cudart OpenGL::GL)
+target_link_libraries(sim PRIVATE CUDA::cudart_static OpenGL::GL)
 
 # ---------------- main app ----------------
 add_executable(webcuda
@@ -78,13 +78,15 @@ if(MSVC)
 else()
   target_compile_options(webcuda PRIVATE -O2 -Wall)
 endif()
+# cudart_static: the binary must not depend on a CUDA toolkit DLL/so on the
+# target machine — only the NVIDIA driver
 target_link_libraries(webcuda PRIVATE
   libcef_lib
   libcef_dll_wrapper
   sim
   SDL3::SDL3-static
   OpenGL::GL
-  CUDA::cudart)
+  CUDA::cudart_static)
 if(UNIX AND NOT APPLE)
   target_link_libraries(webcuda PRIVATE X11::X11)
   # libcef.so sits next to the executable
