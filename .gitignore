@@ -4,3 +4,4 @@ cef_cache/
 *.ppm
 *.png
 dist-windows/
+*.zip
