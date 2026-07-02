@@ -88,6 +88,7 @@ struct AppState {
   // boxes" from compositing/presentation artifacts
   int probeBarMin = 1 << 20, probeBarMax = -1;
   int probeBoxMin = 1 << 20, probeBoxMax = -1;
+  int probeGapMin = 1 << 20, probeGapMax = -1;  // right-anchor live drift
   bool tCollapsed = false, tExpanded = false;
   bool tMenuOpen = false, tMenuClosed = false, tPanel = false;
   std::string menuShotRestore;
@@ -542,6 +543,10 @@ void handleEvent(const SDL_Event& e) {
       if (changed && g.fbW > 0 && g.fbH > 0) {
         g.lastResizeTime = nowSec();
         g.overlay.resize(g.fbW, g.fbH);
+        // brief bounded wait for Chromium's relayout at the new size, so the
+        // redraw composites a fully consistent frame: right/bottom-anchored
+        // UI then tracks the dragged border with zero drift
+        g.overlay.waitCleanPaint(g.fbW, g.fbH, 40.0);
         // redraw in lockstep with the resize event: SDL acknowledges the
         // WM's sync request inside this swap, so the compositor displays
         // exactly this frame for this resize step
@@ -849,12 +854,17 @@ int main(int argc, char** argv) {
             bool changed = e->window.data1 != g.fbW || e->window.data2 != g.fbH;
             g.fbW = e->window.data1;
             g.fbH = e->window.data2;
-            if (changed && g.fbW > 0 && g.fbH > 0 && !busy) {
-              busy = true;
+            if (changed && g.fbW > 0 && g.fbH > 0) {
               g.lastResizeTime = nowSec();
-              g.overlay.resize(g.fbW, g.fbH);
-              if (g.render) g.render(false);
-              busy = false;
+              g.overlay.resize(g.fbW, g.fbH);  // no pumping: safe when nested
+              if (!busy) {
+                busy = true;
+                // bounded wait for the matching relayout -> zero drift on
+                // right/bottom-anchored UI (see the Linux handler)
+                g.overlay.waitCleanPaint(g.fbW, g.fbH, 40.0);
+                if (g.render) g.render(false);
+                busy = false;
+              }
             }
             break;
           }
@@ -962,13 +972,25 @@ int main(int argc, char** argv) {
               g.probeBoxMin = std::min(g.probeBoxMin, box);
               g.probeBoxMax = std::max(g.probeBoxMax, box);
             }
+            // right-anchored perf window: its gap to the right edge must
+            // stay constant DURING the resize, not just after it — this is
+            // what waitCleanPaint guarantees (drift == relayout lag frames)
+            int pr = g.overlay.probeAlphaEdgeRow(86, g.fbW - 2, g.fbW - 250,
+                                                 true);
+            if (pr >= 0) {
+              int gap = g.fbW - 1 - pr;
+              g.probeGapMin = std::min(g.probeGapMin, gap);
+              g.probeGapMax = std::max(g.probeGapMax, gap);
+            }
           }
           if (g.selftestFrame == 130) {
             std::printf(
                 "[selftest] resize probe: topbar bottom %d..%d (drift %d), "
-                "box top %d..%d (drift %d), stretched frames filtered: %llu\n",
+                "box top %d..%d (drift %d), right gap %d..%d (drift %d), "
+                "stretched frames filtered: %llu\n",
                 g.probeBarMin, g.probeBarMax, g.probeBarMax - g.probeBarMin,
                 g.probeBoxMin, g.probeBoxMax, g.probeBoxMax - g.probeBoxMin,
+                g.probeGapMin, g.probeGapMax, g.probeGapMax - g.probeGapMin,
                 (unsigned long long)g.overlay.skippedUploads());
           }
           // exercise collapse/expand on the perf window through the REAL

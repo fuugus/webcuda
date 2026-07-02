@@ -388,6 +388,14 @@
      Chromium's stretched transitional frames during live resize -->
 <div style="position:fixed;left:0;top:300px;width:4px;height:2px;
             background:rgba(64,128,192,0.016);pointer-events:none;z-index:9999"></div>
+<!-- size echo: 2x2 px opaque marker whose color encodes innerWidth/Height
+     (R = w&255, G = h&255, B = hi nibbles). Updated synchronously in the
+     resize handler, so a paint carrying the new echo provably contains the
+     finished relayout INCLUDING the JS-anchored windows — the native side
+     waits for it per live-resize step (Overlay::waitCleanPaint) and gets
+     zero anchor drift. Sits over the opaque activity bar: invisible. -->
+<div id="size-echo" style="position:fixed;left:0;top:302px;width:2px;height:2px;
+            pointer-events:none;z-index:9999"></div>
 
 <template id="wctl-tpl">
   <div id="wctl">
@@ -578,7 +586,15 @@ function clamp(st) {
 // anchored windows follow their border; everything stays reachable.
 // hidden windows are skipped: their offsetWidth/Height read 0 and would
 // corrupt the anchor math — they re-anchor in showWin() instead
+const sizeEchoEl = document.getElementById('size-echo');
+function updateSizeEcho() {
+  sizeEchoEl.style.background =
+    `rgb(${innerWidth & 255},${innerHeight & 255},` +
+    `${(((innerWidth >> 8) & 15) << 4) | ((innerHeight >> 8) & 15)})`;
+}
+updateSizeEcho();
 window.addEventListener('resize', () => {
+  updateSizeEcho();
   window.shellState && typeof applyShell === 'function' && applyShell();
   for (const st of Object.values(wins)) {
     if (st.el.style.display === 'none') continue;

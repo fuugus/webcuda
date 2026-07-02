@@ -42,6 +42,17 @@ class Overlay {
   void resize(int w, int h);
   void setWindowPos(int x, int y);  // for GetScreenPoint (menus, tooltips)
 
+  // Block-pump CEF until a clean (non-stretched, see uploadDirty) paint of
+  // exactly w x h landed in the CPU mirror, or timeoutMs elapsed. Returns
+  // true if the paint arrived. Called between resize() and the redraw of a
+  // live-resize step: Chromium's relayout for the new size is asynchronous,
+  // and presenting before it lands shows the previous layout anchored
+  // top-left — right/bottom-anchored UI visibly lags the dragged border.
+  // A DOM-only UI relayouts in a few ms, so waiting for the matching frame
+  // makes every anchor pixel-exact; on timeout the caller just presents the
+  // stale frame exactly as before.
+  bool waitCleanPaint(int w, int h, double timeoutMs);
+
   // ---- input (coordinates in framebuffer pixels) ----
   void mouseMove(int x, int y, uint32_t cefModifiers);
   void mouseButton(int x, int y, int cefButton /*0=L 1=M 2=R*/, bool down,

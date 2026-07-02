@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "include/cef_app.h"
@@ -306,6 +307,7 @@ uint8_t g_sentinel[4] = {};
 bool g_sentinelLearned = false;
 bool g_resizeActive = false;
 uint64_t g_skippedUploads = 0;
+bool g_externalBF = true;
 
 const uint8_t* sentinelPixel() {
   if (!g_client || g_client->mirror_.empty()) return nullptr;
@@ -313,6 +315,27 @@ const uint8_t* sentinelPixel() {
     return nullptr;
   return g_client->mirror_.data() +
          ((size_t)kSentinelY * g_client->mirrorW_ + kSentinelX) * 4;
+}
+
+// size-echo marker (see ui/index.html): opaque pixel at (0,302) whose color
+// encodes innerWidth/innerHeight. It is set synchronously in the UI's resize
+// handler, so a paint carrying the echo for (w,h) provably contains the
+// finished relayout for that size — including the JS-anchored windows. A
+// compositor frame of the old layout at the new surface size (which passes
+// the stretch sentinel!) still carries the old echo and is rejected.
+constexpr int kEchoX = 0, kEchoY = 302;
+bool g_echoLearned = false;  // echo present in this UI build
+
+bool echoMatches(int w, int h) {
+  if (!g_client || g_client->mirror_.empty()) return false;
+  if (kEchoY >= g_client->mirrorH_ || kEchoX >= g_client->mirrorW_)
+    return false;
+  const uint8_t* p = g_client->mirror_.data() +
+                     ((size_t)kEchoY * g_client->mirrorW_ + kEchoX) * 4;
+  if (p[3] != 255) return false;  // mirror is BGRA; the echo is fully opaque
+  int ew = ((p[0] >> 4) << 8) | p[2];
+  int eh = ((p[0] & 15) << 8) | p[1];
+  return ew == w && eh == h;
 }
 
 CefRefPtr<CefBrowserHost> host() {
@@ -363,6 +386,7 @@ bool Overlay::init(const Config& cfg, QueryHandler onQuery,
     return false;
   }
   g_cefInitialized = true;
+  g_externalBF = cfg.externalBeginFrame;
 
   g_client = new OverlayClient(cfg.width, cfg.height, std::move(onQuery),
                                std::move(onCursor));
@@ -425,6 +449,52 @@ void Overlay::resize(int w, int h) {
   g_client->width_ = w;
   g_client->height_ = h;
   if (auto h2 = host()) h2->WasResized();
+}
+
+bool Overlay::waitCleanPaint(int w, int h, double timeoutMs) {
+  // Not reentrant: CEF's pump can dispatch window messages, and on Windows a
+  // nested WM_SIZE would land back here through the resize event watch.
+  static bool pumping = false;
+  if (pumping || !g_client) return false;
+  pumping = true;
+
+  auto t0 = std::chrono::steady_clock::now();
+  auto elapsed = [&] {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0)
+        .count();
+  };
+  double lastBf = -1e9;
+  bool ok = false;
+  for (;;) {
+    if (g_client->mirrorW_ == w && g_client->mirrorH_ == h) {
+      if (echoMatches(w, h)) {
+        g_echoLearned = true;
+        ok = true;  // relayout for exactly this size has landed
+        break;
+      }
+      // no echo in this UI (older page): fall back to size + stretch check
+      if (!g_echoLearned) {
+        const uint8_t* sp = sentinelPixel();
+        if (!sp || !g_sentinelLearned || std::memcmp(sp, g_sentinel, 4) == 0) {
+          ok = true;
+          break;
+        }
+      }
+    }
+    double el = elapsed();
+    if (el >= timeoutMs) break;
+    // begin frames give Chromium composite opportunities; pace them — one
+    // per loop iteration would just be dropped
+    if (g_externalBF && el - lastBf >= 2.0) {
+      if (auto hst = host()) hst->SendExternalBeginFrame();
+      lastBf = el;
+    }
+    CefDoMessageLoopWork();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  pumping = false;
+  return ok;
 }
 
 void Overlay::setWindowPos(int x, int y) {
