@@ -93,7 +93,9 @@ build_windows() {
   # needed (run from a "x64 Native Tools" shell or after msvc-dev-cmd in CI).
   # allow-unsupported-compiler: nvcc hard-gates on the MSVC version; new VS
   # updates ship faster than CUDA's allowlist and work fine for this code.
-  export CUDAFLAGS="-allow-unsupported-compiler ${CUDAFLAGS:-}"
+  # NVCC_APPEND_FLAGS is read by nvcc itself on every invocation — including
+  # CMake's compiler-identification step, which ignores CMAKE_CUDA_FLAGS.
+  export NVCC_APPEND_FLAGS="-allow-unsupported-compiler ${NVCC_APPEND_FLAGS:-}"
   echo "[build] windows: Ninja + MSVC (needs vcvars in the environment)"
   cmake -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCEF_ROOT="$PWD/third_party/cef-windows" \
