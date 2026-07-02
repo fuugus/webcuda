@@ -83,7 +83,7 @@ without one). SDL3 is fetched and built automatically by CMake.
 | platform | status |
 |---|---|
 | Linux x86_64 | full support, runtime-tested (this is the reference platform) |
-| Windows x86_64 | full stack supported (CUDA/GL/SDL3/CEF); frameless chrome falls back to native decorations; compile-verified in CI, runtime testing wanted |
+| Windows x86_64 | full stack supported (CUDA/GL/SDL3/CEF) incl. frameless chrome and live resize; runtime-tested (`build.bat` wraps the MSVC env setup) |
 | macOS | **unsupported** — CUDA does not exist on Apple platforms (Apple dropped NVIDIA in 2019; Apple Silicon cannot host NVIDIA GPUs). The shell would port with a Metal/CPU compute backend behind `sim.h` |
 
 nvcc cannot cross-compile (Windows CUDA requires MSVC), so each platform
@@ -116,6 +116,13 @@ Flags: `--native` (OS window decorations instead of the web header bar),
 `--shot file.ppm`, `--size WxH`, `--no-ext-bf` (compare against the old
 free-running paint mode).
 
+On Windows the same chrome works via the Win32 route: move/resize hand off
+to the OS modal loop (`WM_NCLBUTTONDOWN` + hit-test codes, so DWM snapping
+works), and an SDL event watch keeps rendering from inside that loop —
+without it the app would freeze for the duration of every border drag,
+since `SDL_PollEvent` stops returning there. On other platforms frameless
+mode falls back to `--native` automatically.
+
 ## Fallback path
 
 If the GL context is not on a CUDA device (software GL, hybrid laptop,
@@ -124,15 +131,18 @@ device→host→texture copy per frame. CUDA still computes on the GPU; only the
 display path pays one copy. The zero-copy interop engages automatically when
 GL runs on the NVIDIA card (X11/GLX preferred, Wayland fallback handled).
 
-## Windows notes (design only, untested)
+## Windows notes
 
-Every component is cross-platform: SDL3, CEF, CUDA-GL interop all work on
-Windows. Porting checklist:
-- replace the `readlink("/proc/self/exe")` exe-dir lookup and the X11-specific
-  bits (`_NET_WM_MOVERESIZE` → `SDL_HitTest` or WM_NCHITTEST for the frameless
-  chrome; resize sync is handled natively by DWM)
-- CEF on Windows wants `CefMainArgs(hInstance)` and the sandbox disabled the same way
-- keyboard translation already uses Windows VK codes (CEF's cross-platform convention)
-- optional upgrade: CEF `shared_texture_enabled` + `OnAcceleratedPaint` gives a
-  D3D11 shared texture on Windows (zero-copy UI too); interop via
-  `WGL_NV_DX_interop2` or move the scene to Vulkan external-memory
+The port is complete and runtime-tested: exe-dir lookup, `CefMainArgs(hInstance)`,
+VK-code keyboard translation, frameless chrome (`WM_NCLBUTTONDOWN` hit-test
+handoff) and live resize (event-watch rendering inside the modal loop) all
+have Win32 paths. Remaining optional upgrade: CEF `shared_texture_enabled` +
+`OnAcceleratedPaint` gives a D3D11 shared texture on Windows (zero-copy UI
+too); interop via `WGL_NV_DX_interop2` or move the scene to Vulkan
+external-memory.
+
+One deployment gotcha: a CUDA binary only runs kernels on GPUs it carries
+SASS for (or newer PTX the *driver's* JIT accepts — a driver older than the
+building toolkit rejects the PTX outright). Building locally uses
+`-arch=native`, so this only concerns binaries built elsewhere, e.g. CI
+artifacts.

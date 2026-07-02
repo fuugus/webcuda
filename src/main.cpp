@@ -51,6 +51,9 @@ struct AppState {
   Display* xdpy = nullptr;
   ::Window xwin = 0;
 #endif
+#ifdef _WIN32
+  HWND hwnd = nullptr;  // native handle (frameless move/resize via DWM)
+#endif
 
   int fbW = 0, fbH = 0;
   int simW = 0, simH = 0;
@@ -166,11 +169,14 @@ enum {  // _NET_WM_MOVERESIZE directions
 };
 
 bool canMoveResize() {
-#ifdef __linux__
+#if defined(__linux__)
   return g.frameless && g.xdpy &&
          !(SDL_GetWindowFlags(g.window) & SDL_WINDOW_FULLSCREEN);
+#elif defined(_WIN32)
+  return g.frameless && g.hwnd &&
+         !(SDL_GetWindowFlags(g.window) & SDL_WINDOW_FULLSCREEN);
 #else
-  return false;  // frameless chrome is X11-only for now
+  return false;  // frameless chrome needs X11 or Win32
 #endif
 }
 
@@ -193,7 +199,7 @@ int edgeDir(double x, double y) {
 }
 
 void startWmMoveResize(int dir) {
-#ifndef __linux__
+#if !defined(__linux__) && !defined(_WIN32)
   (void)dir;
 #else
   if (!canMoveResize()) return;
@@ -204,6 +210,19 @@ void startWmMoveResize(int dir) {
   g.btn[0] = g.btn[1] = g.btn[2] = false;
   g.webCaptured = g.sceneCaptured = false;
 
+#ifdef _WIN32
+  // Classic borderless-window trick: hand the drag to the OS modal move/size
+  // loop via the non-client hit-test code, so moving/resizing behaves exactly
+  // like a native titlebar/border (DWM smoothness + snap included).
+  // SendMessage blocks until the drag ends; the event watch installed in
+  // main() keeps rendering from inside the modal loop.
+  static const WORD ht[9] = {HTTOPLEFT,     HTTOP,    HTTOPRIGHT,
+                             HTRIGHT,       HTBOTTOMRIGHT, HTBOTTOM,
+                             HTBOTTOMLEFT,  HTLEFT,   HTCAPTION};  // kWmSize* order
+  if (dir < 0 || dir > 8) return;
+  ReleaseCapture();
+  SendMessage(g.hwnd, WM_NCLBUTTONDOWN, ht[dir], 0);
+#else
   int wx = 0, wy = 0;
   SDL_GetWindowPosition(g.window, &wx, &wy);
 
@@ -221,6 +240,7 @@ void startWmMoveResize(int dir) {
   XSendEvent(g.xdpy, DefaultRootWindow(g.xdpy), False,
              SubstructureRedirectMask | SubstructureNotifyMask, &ev);
   XFlush(g.xdpy);
+#endif
 #endif
 }
 
@@ -513,6 +533,8 @@ void handleEvent(const SDL_Event& e) {
     case SDL_EVENT_TEXT_INPUT:
       onTextInput(e.text.text);
       break;
+#ifndef _WIN32  // on Windows the event watch in main() handles these (they
+                // must run inside the OS modal move/size loop, not after it)
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
       bool changed = e.window.data1 != g.fbW || e.window.data2 != g.fbH;
       g.fbW = e.window.data1;
@@ -533,6 +555,7 @@ void handleEvent(const SDL_Event& e) {
     case SDL_EVENT_WINDOW_MOVED:
       g.overlay.setWindowPos(e.window.data1, e.window.data2);
       break;
+#endif
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
       if (g.webFocused) g.overlay.setFocus(true);
       break;
@@ -580,8 +603,11 @@ int main(int argc, char** argv) {
   }
   const char* driver = SDL_GetCurrentVideoDriver();
   std::printf("[sdl] video driver: %s\n", driver);
-  if (g.frameless && std::strcmp(driver, "x11") != 0) {
-    std::fprintf(stderr, "[sdl] not on X11 — using native decorations\n");
+  if (g.frameless && std::strcmp(driver, "x11") != 0 &&
+      std::strcmp(driver, "windows") != 0) {
+    std::fprintf(stderr,
+                 "[sdl] frameless chrome needs X11 or Windows — using native "
+                 "decorations\n");
     g.frameless = false;
   }
 
@@ -621,6 +647,11 @@ int main(int argc, char** argv) {
     wa.bit_gravity = NorthWestGravity;
     XChangeWindowAttributes(g.xdpy, g.xwin, CWBitGravity, &wa);
   }
+#endif
+#ifdef _WIN32
+  g.hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(g.window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                                        nullptr);
 #endif
 
   SDL_GetWindowSizeInPixels(g.window, &g.fbW, &g.fbH);
@@ -802,6 +833,48 @@ int main(int argc, char** argv) {
     }
     return true;
   };
+
+#ifdef _WIN32
+  // Windows runs interactive move/resize in a modal message loop:
+  // SDL_PollEvent stops returning until the mouse is released, which froze
+  // the app during border drags. Event watches fire synchronously from
+  // inside that loop (at push time), so on Windows resize/expose/move are
+  // handled here and skipped in handleEvent. All SDL events originate on
+  // this thread (the overlay never pushes any).
+  SDL_AddEventWatch(
+      [](void*, SDL_Event* e) -> bool {
+        static bool busy = false;  // a swap can dispatch sent messages: no reentry
+        switch (e->type) {
+          case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
+            bool changed = e->window.data1 != g.fbW || e->window.data2 != g.fbH;
+            g.fbW = e->window.data1;
+            g.fbH = e->window.data2;
+            if (changed && g.fbW > 0 && g.fbH > 0 && !busy) {
+              busy = true;
+              g.lastResizeTime = nowSec();
+              g.overlay.resize(g.fbW, g.fbH);
+              if (g.render) g.render(false);
+              busy = false;
+            }
+            break;
+          }
+          case SDL_EVENT_WINDOW_EXPOSED:
+            if (!busy) {
+              busy = true;
+              if (g.render) g.render(false);
+              busy = false;
+            }
+            break;
+          case SDL_EVENT_WINDOW_MOVED:
+            g.overlay.setWindowPos(e->window.data1, e->window.data2);
+            break;
+          default:
+            break;
+        }
+        return true;
+      },
+      nullptr);
+#endif
 
   while (!g.shouldQuit) {
     uint64_t pc0 = g.presentCount;
