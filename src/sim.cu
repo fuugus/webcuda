@@ -150,7 +150,7 @@ dim3 grid2d(int w, int h, dim3 block) {
   return dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y);
 }
 
-void seedPattern() {
+bool seedPattern() {
   dim3 block(16, 16), grid = grid2d(W, H, block);
   kSeed<<<grid, block>>>(fieldA, W, H);
   std::mt19937 rng(20260611);
@@ -158,7 +158,12 @@ void seedPattern() {
       rr(6, 22);
   for (int i = 0; i < 24; i++)
     kBlob<<<grid, block>>>(fieldA, W, H, rx(rng), ry(rng), rr(rng));
-  cudaDeviceSynchronize();
+  // Launch errors surface here, not at the <<<>>> site. The big one:
+  // cudaErrorUnsupportedPtxVersion — binary built by a CUDA toolkit newer
+  // than the driver's JIT, with no native SASS for this GPU. Without this
+  // check the sim silently no-ops (black background, kernels 0 ms).
+  CUCHECK(cudaDeviceSynchronize());
+  return true;
 }
 
 }  // namespace
@@ -202,7 +207,17 @@ bool simInit(int w, int h, unsigned glTexture) {
   CUCHECK(cudaEventCreate(&evStart));
   CUCHECK(cudaEventCreate(&evStop));
 
-  seedPattern();
+  if (!seedPattern()) {
+    std::fprintf(stderr,
+                 "[cuda] kernels cannot run on %s — if the error above says "
+                 "'unsupported toolchain'/'unsupported PTX version', this "
+                 "binary was built by a newer CUDA toolkit than the driver "
+                 "supports and has no native code for this GPU; rebuild on "
+                 "this machine (build.sh picks -arch=native) or update the "
+                 "driver\n",
+                 prop.name);
+    return false;
+  }
   return true;
 }
 

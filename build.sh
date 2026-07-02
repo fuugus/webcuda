@@ -56,11 +56,17 @@ fetch_cef() {  # $1 = linux|windows
   fi
 }
 
-cuda_archs() {
-  # native needs a visible GPU (fails on CI); fall back to a conservative set
-  # (embedded PTX JIT-compiles forward onto newer GPUs, incl. Blackwell)
+cuda_archs() {  # $1 = linux|windows
+  # native needs a visible GPU (fails on CI); fall back to a conservative set.
+  # Real SASS per arch incl. Blackwell (120) where the toolkit allows: PTX
+  # forward-JIT is NOT a safe net — a driver older than the building toolkit
+  # rejects the PTX (cudaErrorUnsupportedPtxVersion) and every kernel
+  # silently no-ops. 120 needs CUDA >= 12.8: CI has 13.2 on Windows (the
+  # runnable-artifact platform) but 12.6 on Linux (compile check only).
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     echo native
+  elif [ "$1" = windows ]; then
+    echo "75;86;89;120"
   else
     echo "75;86;89"
   fi
@@ -78,11 +84,11 @@ build_linux() {
   fetch_cef linux
   local nvcc; nvcc="$(find_nvcc)"
   [ -n "$nvcc" ] || { echo "[build] ERROR: nvcc not found — install the CUDA toolkit"; exit 1; }
-  echo "[build] linux: nvcc=$nvcc archs=$(cuda_archs)"
+  echo "[build] linux: nvcc=$nvcc archs=$(cuda_archs linux)"
   cmake -B build-linux -DCMAKE_BUILD_TYPE=Release \
         -DCEF_ROOT="$PWD/third_party/cef-linux" \
         -DCMAKE_CUDA_COMPILER="$nvcc" \
-        -DCMAKE_CUDA_ARCHITECTURES="$(cuda_archs)"
+        -DCMAKE_CUDA_ARCHITECTURES="$(cuda_archs linux)"
   cmake --build build-linux -j "$(nproc)"
   echo "[build] linux binary: build-linux/webcuda"
 }
@@ -99,7 +105,7 @@ build_windows() {
   echo "[build] windows: Ninja + MSVC (needs vcvars in the environment)"
   cmake -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCEF_ROOT="$PWD/third_party/cef-windows" \
-        -DCMAKE_CUDA_ARCHITECTURES="$(cuda_archs)"
+        -DCMAKE_CUDA_ARCHITECTURES="$(cuda_archs windows)"
   cmake --build build-windows -j
   # assemble the runnable package (exe + CEF runtime + ui, no build clutter)
   rm -rf dist-windows && mkdir dist-windows
