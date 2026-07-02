@@ -3,3 +3,4 @@ third_party/
 cef_cache/
 *.ppm
 *.png
+dist-windows/

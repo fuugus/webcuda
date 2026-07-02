@@ -57,11 +57,12 @@ fetch_cef() {  # $1 = linux|windows
 }
 
 cuda_archs() {
-  # native needs a visible GPU (fails on CI); fall back to a broad set
+  # native needs a visible GPU (fails on CI); fall back to a conservative set
+  # (embedded PTX JIT-compiles forward onto newer GPUs, incl. Blackwell)
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     echo native
   else
-    echo "75;86;89;120"
+    echo "75;86;89"
   fi
 }
 
@@ -88,12 +89,20 @@ build_linux() {
 
 build_windows() {
   fetch_cef windows
-  echo "[build] windows: letting CMake pick the Visual Studio toolchain"
-  cmake -B build-windows \
+  # Ninja + MSVC env: nvcc drives cl.exe directly, no CUDA MSBuild toolset
+  # needed (run from a "x64 Native Tools" shell or after msvc-dev-cmd in CI)
+  echo "[build] windows: Ninja + MSVC (needs vcvars in the environment)"
+  cmake -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCEF_ROOT="$PWD/third_party/cef-windows" \
         -DCMAKE_CUDA_ARCHITECTURES="$(cuda_archs)"
-  cmake --build build-windows --config Release -j
-  echo "[build] windows binary: build-windows/Release/webcuda.exe"
+  cmake --build build-windows -j
+  # assemble the runnable package (exe + CEF runtime + ui, no build clutter)
+  rm -rf dist-windows && mkdir dist-windows
+  cp build-windows/webcuda.exe dist-windows/
+  cp build-windows/*.dll build-windows/*.pak build-windows/*.bin \
+     build-windows/*.dat build-windows/*.json dist-windows/ 2>/dev/null || true
+  cp -r build-windows/locales build-windows/ui dist-windows/
+  echo "[build] windows package: dist-windows/"
 }
 
 run_test() {
@@ -104,7 +113,7 @@ run_test() {
       ;;
     windows)
       echo "[build] running self-test ..."
-      (cd build-windows/Release && ./webcuda.exe --selftest --shot selftest.ppm)
+      (cd dist-windows && ./webcuda.exe --selftest --shot selftest.ppm)
       ;;
   esac
 }
