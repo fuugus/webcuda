@@ -9,6 +9,12 @@ struct SimParams {
   int   palette = 0;        // 0..3
   float brushRadius = 18.f; // in sim cells
   bool  paused = false;
+
+  // scene 0: Gray-Scott reaction-diffusion; scene 1: 500M-point cloud
+  // rasterized by a CUDA kernel (64-bit atomicMin depth+color, no GL
+  // primitive pipeline)
+  int   scene = 0;
+  float camYaw = 0.6f, camPitch = 0.35f, camDist = 2.6f;  // scene 1 orbit
 };
 
 struct SimStats {

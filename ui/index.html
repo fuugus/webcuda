@@ -968,6 +968,19 @@ document.addEventListener('keydown', e => {
 }, true);
 
 /* ---------------- menu definitions ---------------- */
+let curScene = 0;
+function setScene(s) {
+  curScene = s;
+  send(`set scene ${s}`);
+  uiLog(s === 1
+      ? 'Scene: Point Cloud — 500M points, CUDA-rasterized (first switch allocates 8 GB)'
+      : 'Scene: Gray-Scott reaction-diffusion');
+}
+const sceneItems = () => [
+  { label: 'Reaction-Diffusion', checked: curScene === 0, action: () => setScene(0) },
+  { label: 'Point Cloud — 500M (CUDA raster)', checked: curScene === 1, action: () => setScene(1) },
+];
+
 const presetItems = () =>
     [...document.querySelectorAll('#presets button')].map(b => ({
       label: b.textContent, checked: b.classList.contains('active'),
@@ -982,6 +995,8 @@ const paletteItems = () =>
 
 const MENUS = {
   Simulation: () => [
+    { label: 'Scene', children: sceneItems() },
+    { sep: true },
     { label: paused ? 'Resume' : 'Pause', shortcut: 'Space', action: () => setPaused(!paused) },
     { label: 'Reset', shortcut: 'Ctrl+R', action: () => send('cmd reset') },
     { label: 'Export Frame', shortcut: 'Ctrl+E', action: () => send('cmd shot') },
@@ -1058,6 +1073,8 @@ document.querySelectorAll('#menubar .mb-item').forEach(b => {
 
 function openContextMenu(x, y) {
   openRootMenu([
+    { label: 'Scene', children: sceneItems() },
+    { sep: true },
     { label: paused ? 'Resume' : 'Pause', shortcut: 'Space', action: () => setPaused(!paused) },
     { label: 'Reset Simulation', shortcut: 'Ctrl+R', action: () => send('cmd reset') },
     { label: 'Export Frame', shortcut: 'Ctrl+E', action: () => send('cmd shot') },

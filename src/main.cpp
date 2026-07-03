@@ -108,6 +108,8 @@ struct AppState {
   int dragFrames = 240;
   std::string shotPath = "selftest.ppm";
   bool uiReady = false;
+  bool fpsLog = false;   // print FPS + CUDA ms once per second (benchmarks)
+  bool noVsync = false;  // benchmarks only: uncapped presentation
 
   bool shouldQuit = false;
 };
@@ -248,12 +250,20 @@ void startWmMoveResize(int dir) {
 // ---------------------------------------------------------------------------
 // Input handlers
 // ---------------------------------------------------------------------------
-void onMouseMove(double x, double y) {
+void onMouseMove(double x, double y, double relX, double relY) {
   g.mouseX = x;
   g.mouseY = y;
   if (!g.sceneCaptured)  // keep hover states correct on the web layer
     g.overlay.mouseMove((int)x, (int)y, mods());
-  if (g.sceneCaptured && g.btn[0]) brushAt(x, y);
+  if (g.sceneCaptured && g.btn[0]) {
+    if (g.params.scene == 1) {  // point cloud: orbit
+      g.params.camYaw -= (float)relX * 0.005f;
+      g.params.camPitch = std::clamp(
+          g.params.camPitch + (float)relY * 0.005f, -1.5f, 1.5f);
+    } else {
+      brushAt(x, y);
+    }
+  }
 
   // cursor shape: resize arrows on frameless borders, web cursor over UI,
   // crosshair over the simulation
@@ -303,7 +313,7 @@ void onMouseButton(int button, bool down, int clicks) {
     } else {
       g.sceneCaptured = true;
       setWebFocus(false);
-      if (button == 0) brushAt(g.mouseX, g.mouseY);
+      if (button == 0 && g.params.scene == 0) brushAt(g.mouseX, g.mouseY);
     }
   } else {
     if (g.webCaptured) {
@@ -320,6 +330,9 @@ void onMouseButton(int button, bool down, int clicks) {
 void onScroll(double dx, double dy) {
   if (g.overlay.uiAt((int)g.mouseX, (int)g.mouseY)) {
     g.overlay.mouseWheel((int)g.mouseX, (int)g.mouseY, dx, dy, mods());
+  } else if (g.params.scene == 1) {  // point cloud: zoom
+    g.params.camDist =
+        std::clamp(g.params.camDist * (1.f - (float)dy * 0.1f), 0.15f, 25.f);
   } else {
     g.params.brushRadius =
         std::clamp(g.params.brushRadius + (float)dy * 2.f, 4.f, 80.f);
@@ -402,6 +415,7 @@ bool onQuery(const std::string& req, std::string& resp) {
     else if (!std::strcmp(name, "steps")) g.params.steps = std::clamp((int)v, 0, 60);
     else if (!std::strcmp(name, "brush")) g.params.brushRadius = std::clamp(v, 4.f, 80.f);
     else if (!std::strcmp(name, "palette")) g.params.palette = (int)v & 3;
+    else if (!std::strcmp(name, "scene")) g.params.scene = (int)v ? 1 : 0;
     resp = "ok";
     return true;
   }
@@ -511,7 +525,7 @@ void handleEvent(const SDL_Event& e) {
       g.shouldQuit = true;
       break;
     case SDL_EVENT_MOUSE_MOTION:
-      onMouseMove(e.motion.x, e.motion.y);
+      onMouseMove(e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel);
       break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
@@ -592,6 +606,10 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--native")) g.frameless = false;
     else if (!std::strcmp(argv[i], "--no-ext-bf")) extBeginFrame = false;
     else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) g.shotPath = argv[++i];
+    else if (!std::strcmp(argv[i], "--scene") && i + 1 < argc)
+      g.params.scene = std::strcmp(argv[++i], "points") == 0 ? 1 : 0;
+    else if (!std::strcmp(argv[i], "--fpslog")) g.fpsLog = true;
+    else if (!std::strcmp(argv[i], "--novsync")) g.noVsync = true;
     else if (!std::strcmp(argv[i], "--size") && i + 1 < argc)
       std::sscanf(argv[++i], "%dx%d", &winW, &winH);
   }
@@ -633,7 +651,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "GL context failed: %s\n", SDL_GetError());
     return 1;
   }
-  SDL_GL_SetSwapInterval(1);
+  SDL_GL_SetSwapInterval(g.noVsync ? 0 : 1);
   if (!initGLFunctions()) return 1;
   std::printf("[gl] renderer: %s\n", (const char*)glGetString(GL_RENDERER));
 
@@ -825,6 +843,9 @@ int main(int argc, char** argv) {
       g.paintsPerSec = (g.overlay.paintCount() - paintWindowStart) / paintWin;
       paintWindowStart = g.overlay.paintCount();
       tPaintWindow = tNow;
+      if (g.fpsLog)
+        std::printf("FPS: %.1f | frame %.2f ms | cuda %.2f ms | scene %d\n",
+                    g.fps, g.frameMs, g.simStats.kernelMs, g.params.scene);
     }
 
     if (++frame % 15 == 0 && g.overlay.loaded()) {
@@ -886,11 +907,18 @@ int main(int argc, char** argv) {
       nullptr);
 #endif
 
+  bool argShot = g.shotPath != "selftest.ppm";  // --shot without --selftest
   while (!g.shouldQuit) {
     uint64_t pc0 = g.presentCount;
     SDL_Event e;
     while (SDL_PollEvent(&e)) handleEvent(e);
     if (g.shouldQuit) break;
+
+    // --shot in normal mode: capture once after things settled, keep running
+    if (argShot && !g.selftest && g.presentCount == 300) {
+      g.pendingShot = true;
+      argShot = false;
+    }
 
     // a resize/expose event may have rendered already; with vsync on, a
     // second swap this cycle would just block and add latency

@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 
+#include <cmath>
 #include <cstdio>
 #include <random>
 
@@ -150,6 +151,156 @@ dim3 grid2d(int w, int h, dim3 block) {
   return dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y);
 }
 
+// ---------------------------------------------------------------------------
+// Scene 1: 500M-point cloud, rasterized in CUDA (Schütz-style):
+// every point does one 64-bit atomicMin of (depth<<32 | color) into a
+// framebuffer — no GL primitive pipeline, no vertex fetch, no raster units.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kPointCount = 500'000'000;
+constexpr unsigned long long kFbClear = 0xFFFFFFFFFFFFFFFFull;
+
+struct PPoint {
+  float x, y, z;
+  uint32_t rgba;
+};
+
+PPoint* dPoints = nullptr;
+unsigned long long* dFb = nullptr;  // (depth<<32) | rgba per pixel
+bool pointsReady = false, pointsFailed = false;
+__constant__ float cMVP[16];  // column-major, GL convention
+
+__device__ uint32_t pcg(uint32_t v) {
+  v = v * 747796405u + 2891336453u;
+  v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+  return (v >> 22u) ^ v;
+}
+
+// galaxy-ish disc: radius/angle/height from hashes, color by radius+height
+__global__ void kGenPoints(PPoint* pts, uint32_t n) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  uint32_t h1 = pcg(i), h2 = pcg(h1), h3 = pcg(h2);
+  float r = sqrtf(h1 * (1.f / 4294967296.f));
+  float arm = (i & 1) ? 0.f : 3.14159265f;
+  float ang = h2 * (6.2831853f / 4294967296.f) * 0.25f + r * 5.5f + arm;
+  float y = (h3 * (2.f / 4294967296.f) - 1.f);
+  y = y * y * y * 0.22f * (1.05f - r);
+  PPoint p;
+  p.x = r * cosf(ang);
+  p.z = r * sinf(ang);
+  p.y = y;
+  float t = __saturatef(r * 0.85f + fabsf(y) * 2.5f);
+  unsigned char cr = (unsigned char)(40.f + 215.f * t);
+  unsigned char cg = (unsigned char)(90.f + 130.f * (1.f - t) + 40.f * t);
+  unsigned char cb = (unsigned char)(120.f + 135.f * (1.f - t));
+  p.rgba = (uint32_t)cr | ((uint32_t)cg << 8) | ((uint32_t)cb << 16) |
+           0xFF000000u;
+  pts[i] = p;
+}
+
+__global__ void kClearFb(unsigned long long* fb, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) fb[i] = kFbClear;
+}
+
+__global__ void kRasterPoints(const PPoint* __restrict__ pts, uint32_t n,
+                              unsigned long long* fb, int w, int h) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  PPoint p = pts[i];
+  float cx = cMVP[0] * p.x + cMVP[4] * p.y + cMVP[8] * p.z + cMVP[12];
+  float cy = cMVP[1] * p.x + cMVP[5] * p.y + cMVP[9] * p.z + cMVP[13];
+  float cz = cMVP[2] * p.x + cMVP[6] * p.y + cMVP[10] * p.z + cMVP[14];
+  float cw = cMVP[3] * p.x + cMVP[7] * p.y + cMVP[11] * p.z + cMVP[15];
+  if (cw <= 0.f) return;
+  float inv = __frcp_rn(cw);
+  float nx = cx * inv, ny = cy * inv, nz = cz * inv;
+  if (nx < -1.f || nx > 1.f || ny < -1.f || ny > 1.f || nz < 0.f || nz > 1.f)
+    return;
+  int px = (int)((nx * 0.5f + 0.5f) * w);
+  int py = (int)((0.5f - ny * 0.5f) * h);
+  if (px < 0 || px >= w || py < 0 || py >= h) return;
+  // float bits are order-preserving for values in [0,1] — cheap depth key
+  unsigned long long v =
+      ((unsigned long long)__float_as_uint(nz) << 32) | p.rgba;
+  // early-out: with hundreds of points per pixel, most candidates are behind
+  // the current winner — a plain read costs far less than a contended atomic
+  unsigned long long* slot = &fb[py * w + px];
+  if (v < *slot) atomicMin(slot, v);
+}
+
+__global__ void kResolveFb(const unsigned long long* __restrict__ fb, int w,
+                           int h, cudaSurfaceObject_t surf) {
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= w || y >= h) return;
+  unsigned long long v = fb[y * w + x];
+  uchar4 px;
+  if (v == kFbClear) {
+    px = make_uchar4(8, 10, 16, 255);
+  } else {
+    uint32_t c = (uint32_t)v;
+    px = make_uchar4(c & 255, (c >> 8) & 255, (c >> 16) & 255, 255);
+  }
+  surf2Dwrite(px, surf, x * 4, y);
+}
+
+bool ensurePoints() {
+  if (pointsReady) return true;
+  if (pointsFailed) return false;
+  std::printf("[points] allocating %u points (%.1f GB) + framebuffer...\n",
+              kPointCount, kPointCount * sizeof(PPoint) / 1e9);
+  if (cudaMalloc(&dPoints, (size_t)kPointCount * sizeof(PPoint)) !=
+          cudaSuccess ||
+      cudaMalloc(&dFb, (size_t)W * H * 8) != cudaSuccess) {
+    std::fprintf(stderr, "[points] allocation failed — scene unavailable\n");
+    pointsFailed = true;
+    return false;
+  }
+  kGenPoints<<<(kPointCount + 255) / 256, 256>>>(dPoints, kPointCount);
+  cudaDeviceSynchronize();
+  std::printf("[points] ready\n");
+  pointsReady = true;
+  return true;
+}
+
+// minimal column-major mat4 (GL convention) — enough for perspective * lookAt
+void mat4Mul(float* r, const float* a, const float* b) {
+  for (int c = 0; c < 4; c++)
+    for (int rw = 0; rw < 4; rw++) {
+      float s = 0;
+      for (int k = 0; k < 4; k++) s += a[k * 4 + rw] * b[c * 4 + k];
+      r[c * 4 + rw] = s;
+    }
+}
+
+void buildMVP(float* out, const SimParams& p, float aspect) {
+  float cp = std::cos(p.camPitch), sp = std::sin(p.camPitch);
+  float cy = std::cos(p.camYaw), sy = std::sin(p.camYaw);
+  float ex = p.camDist * cp * sy, ey = p.camDist * sp, ez = p.camDist * cp * cy;
+
+  // lookAt(eye, origin, up=+Y):  f = normalize(-eye)
+  float fl = std::sqrt(ex * ex + ey * ey + ez * ez);
+  float fx = -ex / fl, fy = -ey / fl, fz = -ez / fl;
+  // s = normalize(cross(f, up)) = normalize((-fz, 0, fx))
+  float sl = std::sqrt(fz * fz + fx * fx);
+  float sx = -fz / sl, sz = fx / sl;  // sy = 0
+  // u = cross(s, f)
+  float ux = -sz * fy, uy = sz * fx - sx * fz, uz = sx * fy;
+
+  float view[16] = {sx, ux, -fx, 0,  0,  uy, -fy, 0,  sz, uz, -fz, 0,
+                    -(sx * ex + sz * ez), -(ux * ex + uy * ey + uz * ez),
+                    (fx * ex + fy * ey + fz * ez), 1};
+
+  const float fovY = 1.0472f, zn = 0.02f, zf = 60.f;  // 60 deg
+  float t = 1.f / std::tan(fovY * 0.5f);
+  // depth mapped to [0,1] (D3D-style) so the raster kernel's float-bit
+  // depth key stays monotonic
+  float proj[16] = {t / aspect, 0, 0, 0,  0, t, 0, 0,
+                    0, 0, zf / (zn - zf), -1,  0, 0, zn * zf / (zn - zf), 0};
+  mat4Mul(out, proj, view);
+}
+
 bool seedPattern() {
   dim3 block(16, 16), grid = grid2d(W, H, block);
   kSeed<<<grid, block>>>(fieldA, W, H);
@@ -247,20 +398,36 @@ void simFrame(const SimParams& p, SimStats& out) {
   }
 
   cudaEventRecord(evStart);
-  if (!p.paused) {
-    for (int i = 0; i < p.steps; i++) {
-      kStep<<<grid, block>>>(fieldA, fieldB, W, H, p.F, p.k);
-      float2* t = fieldA;
-      fieldA = fieldB;
-      fieldB = t;
+  if (p.scene == 1 && ensurePoints()) {
+    // CUDA point rasterizer: clear -> atomicMin raster -> resolve to surface
+    float mvp[16];
+    buildMVP(mvp, p, (float)W / (float)H);
+    cudaMemcpyToSymbol(cMVP, mvp, sizeof mvp);
+    int fbN = W * H;
+    kClearFb<<<(fbN + 255) / 256, 256>>>(dFb, fbN);
+    kRasterPoints<<<(kPointCount + 255) / 256, 256>>>(dPoints, kPointCount,
+                                                      dFb, W, H);
+    if (gFallback) {
+      // resolve to surface unavailable without interop; not supported here
+    } else {
+      kResolveFb<<<grid, block>>>(dFb, W, H, surf);
     }
-  }
-  if (gFallback) {
-    kColorBuf<<<grid, block>>>(fieldA, W, H, dPixels, p.palette & 3);
-    cudaMemcpyAsync(hPixels, dPixels, (size_t)W * H * sizeof(uchar4),
-                    cudaMemcpyDeviceToHost);
   } else {
-    kColor<<<grid, block>>>(fieldA, W, H, surf, p.palette & 3);
+    if (!p.paused) {
+      for (int i = 0; i < p.steps; i++) {
+        kStep<<<grid, block>>>(fieldA, fieldB, W, H, p.F, p.k);
+        float2* t = fieldA;
+        fieldA = fieldB;
+        fieldB = t;
+      }
+    }
+    if (gFallback) {
+      kColorBuf<<<grid, block>>>(fieldA, W, H, dPixels, p.palette & 3);
+      cudaMemcpyAsync(hPixels, dPixels, (size_t)W * H * sizeof(uchar4),
+                      cudaMemcpyDeviceToHost);
+    } else {
+      kColor<<<grid, block>>>(fieldA, W, H, surf, p.palette & 3);
+    }
   }
   cudaEventRecord(evStop);
 
@@ -282,6 +449,8 @@ void simShutdown() {
   if (fieldB) cudaFree(fieldB), fieldB = nullptr;
   if (dPixels) cudaFree(dPixels), dPixels = nullptr;
   if (hPixels) cudaFreeHost(hPixels), hPixels = nullptr;
+  if (dPoints) cudaFree(dPoints), dPoints = nullptr;
+  if (dFb) cudaFree(dFb), dFb = nullptr;
 }
 
 const char* simDeviceName() { return gDevName; }
